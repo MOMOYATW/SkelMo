@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environments and editors
+.env
+.env.*
+.venv/
+.vscode/
+.idea/
+
+# Training and generated outputs
+save/
+checkpoints/
+outputs/
+runs/
+wandb/
+*.pt
+*.pth
+*.ckpt
+events.out.tfevents.*
+
+# Local datasets and extracted features
+/dataset/
+/data/
+*_features.npz
+
+# Rendered or generated media
+*.mp4
+*.glb
+*.blend
+
+# Local archives and platform files
+*.tar
+*.tar.gz
+*.zip
+.DS_Store

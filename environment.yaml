@@ -1,0 +1,25 @@
+name: skelmo
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.8
+  - pip=24.2
+  - pytorch=2.4.1
+  - torchvision=0.19.1
+  - pytorch-cuda=12.1
+  - pip:
+      - blobfile==3.0.0
+      - einops==0.8.1
+      - imageio==2.35.1
+      - imageio-ffmpeg==0.5.1
+      - matplotlib==3.7.5
+      - moviepy==1.0.3
+      - numpy==1.24.4
+      - pillow==10.4.0
+      - scipy==1.10.1
+      - tensorboard==2.14.0
+      - timm==1.0.25
+      - tqdm==4.67.1
+      - git+https://github.com/inbar-2344/Motion.git

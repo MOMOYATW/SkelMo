@@ -42,7 +42,8 @@ utils/          Skeleton preprocessing and common utilities
 
 ## Pretrained checkpoint
 
-The public checkpoint will be distributed separately from the source repository. Place the model and its matching configuration in the same directory:
+Download the [SkelMo 72k checkpoint bundle from Google Drive](https://drive.google.com/file/d/1LaKArVrWRz0vKXAxFlRHwTKhAApOxdEq/view?usp=sharing),
+then place the model and its matching configuration in the same directory:
 
 ```text
 checkpoints/skelmo_final_72k/
@@ -51,6 +52,13 @@ checkpoints/skelmo_final_72k/
 ```
 
 `args.json` is required because inference restores the model configuration from the checkpoint directory.
+
+SHA-256 checksums:
+
+```text
+f790a483fd2b8feaa0b20b73b38a0d5f9c39c5fa0c28f9d93c199fab63d6e76a  skelmo_final_72k.pt
+e8a5caed03656f56d9a6ba95357c37514a1798b81c1880d0f39af8e0ce66f00e  args.json
+```
 
 ## Input format
 

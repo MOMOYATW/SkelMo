@@ -4,8 +4,9 @@
 
 Official implementation of **SkelMo: Universal Skeletal Motion Generation for 3D Rigged Shapes**, accepted by ECCV 2026.
 
-Ye Tao, Yuxin Yao, Kendong Liu, Dapeng Wu, and Junhui Hou
-City University of Hong Kong
+**Ye Tao, Yuxin Yao, Kendong Liu, Dapeng Wu, and Junhui Hou**
+
+*City University of Hong Kong*
 
 ![SkelMo teaser](assets/teaser-eccv.png)
 

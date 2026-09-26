@@ -15,8 +15,9 @@ SkelMo generates category-agnostic skeletal animation for an arbitrary rigged 3D
 
 - [x] Training and model code
 - [x] Inference code for preprocessed inputs
-- [ ] Pretrained checkpoint (will be released separately)
-- [ ] Dataset and preprocessing assets (subject to their respective licenses)
+- [x] SkelMo 72k pretrained checkpoint
+- [x] Skeleton and rest-pose joint-feature preprocessing
+- [ ] Dataset assets and driving-video feature extraction (subject to their respective licenses)
 
 ## Installation
 
@@ -35,6 +36,7 @@ The first run downloads the DINOv2 ViT-B/14 weights through `timm`.
 data_loaders/   SkelMo dataset and collation code
 diffusion/      Diffusion process and sampling utilities
 model/          Topology-aware SkelMo network
+preprocess/     Rest-pose joint-feature preprocessing
 sample/         Inference entry points
 train/          Distributed training entry points
 utils/          Skeleton preprocessing and common utilities
@@ -60,11 +62,54 @@ f790a483fd2b8feaa0b20b73b38a0d5f9c39c5fa0c28f9d93c199fab63d6e76a  skelmo_final_7
 e8a5caed03656f56d9a6ba95357c37514a1798b81c1880d0f39af8e0ce66f00e  args.json
 ```
 
-## Input format
+## Preparing inference inputs
 
 SkelMo expects a processed target skeleton and DINOv2 features from the driving video.
 
-The skeleton condition is stored as a NumPy dictionary (`cond.npy`) containing the joint hierarchy, rest pose, offsets, graph relations, joint names, and normalization metadata. Static mesh features are aggregated to joints using skinning weights and stored in `joint_averaged_features.npy`.
+### Target skeleton
+
+The target asset must have the following layout. `sample.generate` locates the
+joint features relative to `cond.npy`, so the two paths must retain this
+relationship.
+
+```text
+<asset>/
+├── joint_averaged_features.npy
+└── processed_skeleton/
+    └── cond.npy
+```
+
+Create `cond.npy` from one or more BVH animations of the target skeleton:
+
+```bash
+python -m utils.process_new_skeleton \
+  --bvh_dir /path/to/asset/bvhs \
+  --save_dir /path/to/asset/processed_skeleton \
+  --tpos_bvh /path/to/asset/rest_pose.bvh
+```
+
+Using multiple representative BVH files improves the motion normalization
+statistics. `--tpos_bvh` is optional; when omitted, the script selects a pose
+from the supplied animations. The resulting `cond.npy` stores the joint
+hierarchy, rest pose, offsets, graph relations, joint names, and normalization
+metadata.
+
+Generate the matching rest-pose joint features from rigged GLB assets:
+
+```bash
+python -m preprocess.joint_features.pipeline \
+  --input-dir /path/to/rigged_glbs \
+  --render-root /path/to/work/renders \
+  --output-root /path/to/work/features
+```
+
+The pipeline requires Blender 4.x and uses DINOv2 ViT-B/14 to produce the
+768-dimensional descriptors expected by the released model. Copy
+`<output-root>/<asset>/joint_averaged_features.npy` to `<asset>/`, as shown
+above. See the [joint-feature preprocessing guide](preprocess/joint_features/README.md)
+for the stage layout, Blender options, output schema, and validation commands.
+
+### Driving-video features
 
 Driving-video features are expected under `<video_dir>/features/`:
 
@@ -75,26 +120,11 @@ Driving-video features are expected under `<video_dir>/features/`:
 └── ...
 ```
 
-Each NPZ file must contain the DINOv2 token features under the `features` key. The current model supports clips of up to 40 frames.
-
-The end-to-end asset preprocessing package will be released with the dataset assets. The source for skeleton preprocessing remains available under `utils/` and `data_loaders/truebones/truebones_utils/`.
-
-### Joint-feature preprocessing
-
-Generate the rest-pose DINO features from rigged GLB assets with:
-
-```bash
-python -m preprocess.joint_features.pipeline \
-  --input-dir /path/to/rigged_glbs \
-  --render-root /path/to/work/renders \
-  --output-root /path/to/work/features
-```
-
-The released model uses 768-dimensional DINOv2-B/14 descriptors. Copy the
-resulting `<output-root>/<asset>/joint_averaged_features.npy` beside the
-asset's `processed_skeleton/` directory. See the
-[joint-feature preprocessing guide](preprocess/joint_features/README.md) for
-the stage layout, Blender requirements, output schema, and validation options.
+Each NPZ file must contain a `features` array with shape `[1, 1370, 768]`: one
+CLS token followed by a 37 x 37 DINOv2 ViT-B/14 patch grid. Files are sorted by
+the numeric timestep; only the first 40 frames are used. The current repository
+does not include the raw-video feature extractor, so these features must be
+prepared separately for inference.
 
 ## Inference
 
@@ -111,6 +141,14 @@ python -m sample.generate \
 ```
 
 The command writes skeletal motion as NumPy, BVH, and MP4 files. An inverse-kinematics refinement projects generated joints back onto the target skeleton to preserve bone lengths.
+
+## Validation
+
+Run the preprocessing unit tests without Blender or model weights:
+
+```bash
+python -m unittest discover -s preprocess/joint_features/tests -v
+```
 
 ## Training
 

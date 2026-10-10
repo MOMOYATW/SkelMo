@@ -111,6 +111,26 @@ def matrix_to_rotation_6d_columns(matrices):
     return np.concatenate([matrices[..., :, 0], matrices[..., :, 1]], axis=-1)
 
 
+def project_to_so3(matrices):
+    """Return the closest proper rotation for each input 3x3 matrix.
+
+    Evaluated Blender transforms can retain tiny scale/shear components after
+    importing a GLB. Rotation supervision must not preserve those components,
+    so use the polar factor and explicitly correct reflections.
+    """
+    matrices = np.asarray(matrices, dtype=np.float64)
+    u, _, vh = np.linalg.svd(matrices)
+    rotation = u @ vh
+    reflected = np.linalg.det(rotation) < 0.0
+    if np.any(reflected):
+        u = u.copy()
+        u[..., :, -1] = np.where(
+            reflected[..., None], -u[..., :, -1], u[..., :, -1]
+        )
+        rotation = u @ vh
+    return rotation
+
+
 def skinning_rotations(global_pose_wxyz, global_rest_wxyz, world_to_target_rotation):
     """Return target-frame deformation rotations and column-major 6D form."""
     pose = quaternion_wxyz_to_matrix(global_pose_wxyz)
@@ -123,11 +143,11 @@ def skinning_rotations(global_pose_wxyz, global_rest_wxyz, world_to_target_rotat
 
 def skinning_rotations_from_matrices(global_pose, global_rest, world_to_target_rotation):
     """Matrix-input variant for evaluated Blender world-space transforms."""
-    pose = np.asarray(global_pose, dtype=np.float64)
-    rest = np.asarray(global_rest, dtype=np.float64)
+    pose = project_to_so3(global_pose)
+    rest = project_to_so3(global_rest)
     deformation_world = pose @ np.swapaxes(rest, -1, -2)
     basis = np.asarray(world_to_target_rotation, dtype=np.float64)
-    deformation_target = basis @ deformation_world @ basis.T
+    deformation_target = project_to_so3(basis @ deformation_world @ basis.T)
     return deformation_target, matrix_to_rotation_6d_columns(deformation_target)
 
 

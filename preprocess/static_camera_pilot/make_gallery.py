@@ -49,7 +49,7 @@ def main():
             <p>{html.escape(metadata)}</p>
             <div class="pair">
               <figure><img src="{_relative_url(rest_path, root)}"><figcaption>True REST conditioning image</figcaption></figure>
-              <figure><video src="{_relative_url(video_path, root)}" controls loop muted autoplay playsinline></video><figcaption>Motion F0…FT (REST not inserted)</figcaption></figure>
+              <figure><video src="{_relative_url(video_path, root)}" controls loop muted preload="metadata" playsinline></video><figcaption>Motion F0…FT (REST not inserted)</figcaption></figure>
             </div>
             {overlay_html}
           </article>""")

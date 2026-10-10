@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from .build_dataset import MIN_REST_ALPHA_FRACTION
 from .geometry import matrix_to_rotation_6d_columns, project_world_points, transform_points
 
 
@@ -40,10 +41,14 @@ def validate_record(record_path):
     if rendered != frames:
         errors.append(f"rendered frames: expected {frames}, got {rendered}")
     rest_path = Path(record.get("rest_render_path", Path(record["render_dir"]) / "rest.webp"))
+    rest_alpha_fraction = 0.0
     if not rest_path.is_file():
         errors.append(f"missing aligned rest render: {rest_path}")
     else:
         with Image.open(rest_path) as rest_image:
+            rest_alpha_fraction = float(
+                np.mean(np.asarray(rest_image.convert("RGBA"))[..., 3] > 8)
+            )
             resolution = json.loads(
                 (Path(record["render_dir"]) / "v000.json").read_text()
             )["resolution"]
@@ -51,6 +56,11 @@ def validate_record(record_path):
                 errors.append(
                     f"rest render size: expected {(resolution, resolution)}, "
                     f"got {rest_image.size}"
+                )
+            if rest_alpha_fraction < MIN_REST_ALPHA_FRACTION:
+                errors.append(
+                    "aligned rest render is empty or too small: "
+                    f"foreground_fraction={rest_alpha_fraction:.6f}"
                 )
 
     camera_meta = json.loads((Path(record["render_dir"]) / "v000.json").read_text())
@@ -129,6 +139,7 @@ def validate_record(record_path):
         "camera_inverse_error": camera_inverse_error,
         "in_frame_fraction": float(in_frame.mean()),
         "camera_azimuth_deg": expected_azimuth,
+        "rest_alpha_fraction": rest_alpha_fraction,
     }
 
 
@@ -163,6 +174,9 @@ def main():
         ),
         "min_in_frame_fraction": min(
             (m["in_frame_fraction"] for m in metrics), default=0.0
+        ),
+        "min_rest_alpha_fraction": min(
+            (m["rest_alpha_fraction"] for m in metrics), default=0.0
         ),
         "min_camera_azimuth_deg": min(
             (m["camera_azimuth_deg"] for m in metrics), default=0.0

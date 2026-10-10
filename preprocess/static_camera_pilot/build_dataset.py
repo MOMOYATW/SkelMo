@@ -16,6 +16,7 @@ import traceback
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 
 from .geometry import (
     contact_heuristic,
@@ -28,6 +29,15 @@ from .geometry import (
     transform_points,
     zup_to_yup_matrix,
 )
+
+
+MIN_REST_ALPHA_FRACTION = 0.005
+
+
+def _foreground_fraction(path):
+    with Image.open(path) as image:
+        alpha = np.asarray(image.convert("RGBA"))[..., 3]
+    return float(np.mean(alpha > 8))
 
 
 def _atomic_json(path, payload):
@@ -149,7 +159,7 @@ def _extract_evaluated_globals(armature, joint_names, start_frame, end_frame):
         for joint_index, name in enumerate(joint_names):
             matrix_zup = armature.matrix_world @ armature.pose.bones[str(name)].matrix
             positions[frame_index, joint_index] = axis @ np.asarray(matrix_zup.to_translation())
-            rotation_zup = np.asarray(matrix_zup.to_quaternion().to_matrix())
+            rotation_zup = np.asarray(matrix_zup.to_quaternion().normalized().to_matrix())
             rotations[frame_index, joint_index] = axis @ rotation_zup @ axis.T
 
     rest_positions = np.zeros((joint_count, 3), dtype=np.float64)
@@ -157,7 +167,7 @@ def _extract_evaluated_globals(armature, joint_names, start_frame, end_frame):
     for joint_index, name in enumerate(joint_names):
         matrix_zup = armature.matrix_world @ armature.data.bones[str(name)].matrix_local
         rest_positions[joint_index] = axis @ np.asarray(matrix_zup.to_translation())
-        rotation_zup = np.asarray(matrix_zup.to_quaternion().to_matrix())
+        rotation_zup = np.asarray(matrix_zup.to_quaternion().normalized().to_matrix())
         rest_rotations[joint_index] = axis @ rotation_zup @ axis.T
     return positions, rotations, rest_positions, rest_rotations
 
@@ -277,6 +287,12 @@ def _build_one(row, args, api):
     # Do not append REST to the action frames or inspection MP4. It is a
     # separate conditioning image so motion frame counts remain unambiguous.
     rest_render_path = _render_aligned_rest_pose(render_dir, args, api)
+    rest_alpha_fraction = _foreground_fraction(rest_render_path)
+    if rest_alpha_fraction < MIN_REST_ALPHA_FRACTION:
+        raise ValueError(
+            "Aligned REST render is empty or too small: "
+            f"foreground_fraction={rest_alpha_fraction:.6f}"
+        )
     camera_meta = json.loads((render_dir / "v000.json").read_text())
     transforms = normalized_yup_camera(
         camera_meta["transform_matrix"],
@@ -379,6 +395,7 @@ def _build_one(row, args, api):
         "joint_count": len(names),
         "render_dir": str(render_dir),
         "rest_render_path": str(rest_render_path),
+        "rest_alpha_fraction": rest_alpha_fraction,
         "motion_path": str(motion_path),
         "rig_path": str(rig_path),
         "rotation_target": "global_skinning_deformation_in_gravity_camera",

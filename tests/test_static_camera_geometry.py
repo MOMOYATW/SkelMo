@@ -11,6 +11,7 @@ from preprocess.static_camera_pilot.geometry import (
     normalized_yup_camera,
     pinhole_intrinsics,
     project_world_points,
+    project_to_so3,
     quaternion_wxyz_to_matrix,
     skinning_rotations,
     skinning_rotations_from_matrices,
@@ -70,6 +71,18 @@ class StaticCameraGeometryTests(unittest.TestCase):
         )
         np.testing.assert_allclose(matrix2[0, 0], np.eye(3), atol=1e-7)
         np.testing.assert_allclose(six2[0, 0], [1, 0, 0, 0, 1, 0], atol=1e-7)
+
+    def test_evaluated_scale_and_shear_are_removed_from_rotation_targets(self):
+        contaminated = np.asarray(
+            [[1.001, 0.002, 0.0], [0.0, 0.999, -0.003], [0.0, 0.0, 1.0]]
+        )
+        projected = project_to_so3(contaminated)
+        np.testing.assert_allclose(projected @ projected.T, np.eye(3), atol=1e-12)
+        self.assertAlmostEqual(np.linalg.det(projected), 1.0, places=12)
+        matrix, _ = skinning_rotations_from_matrices(
+            contaminated[None, None], contaminated[None], np.eye(3)
+        )
+        np.testing.assert_allclose(matrix[0, 0], np.eye(3), atol=1e-12)
 
     def test_action_name_recovers_gltf_split_source_animation(self):
         row = {

@@ -1,13 +1,25 @@
 import torch.distributed as dist
+from pathlib import Path
 from torch.utils.data import DataLoader, DistributedSampler
 from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.data.dataset import Truebones
+from data_loaders.static_camera_dataset import StaticCameraDataset
 
 def get_dataset_class(name):
     return Truebones
 
 def get_dataset(num_frames, split='train', temporal_window=31, balanced=False,
                 objects_subset="all", data_dir="", **kwargs):
+    if data_dir and (Path(data_dir) / "records").is_dir():
+        return StaticCameraDataset(
+            root=data_dir,
+            split=split,
+            num_frames=num_frames,
+            temporal_window=temporal_window,
+            balanced=balanced,
+            objects_subset=objects_subset,
+            **kwargs,
+        )
     dataset = Truebones(
         split=split,
         num_frames=num_frames,

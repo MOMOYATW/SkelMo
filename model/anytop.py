@@ -50,8 +50,7 @@ class SkelMo(nn.Module):
         if self.video_feature_mode not in {'rgb', 'dense_dino', 'joint_tracks'}:
             raise ValueError(f"Unsupported video feature mode: {self.video_feature_mode}")
         self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim)
-        # Distinguish the aligned REST conditioning image from observed motion
-        # frames even when their appearances happen to be very similar.
+        # Distinguish the structural NULL slot from observed motion frames.
         self.visual_token_type_embedding = nn.Embedding(2, self.latent_dim)
         nn.init.zeros_(self.visual_token_type_embedding.weight)
 

@@ -22,14 +22,14 @@ def get_gmdm_args(args):
     nfeats = 1
     max_joints=143 #irrelevant
     cond_mode = 'video_frames'
-    feature_len=3
+    feature_len = 9 if args.motion_representation == 'positions_rot6d' else 3
 
     return {'njoints': njoints, 'nfeats': nfeats,
             'latent_dim': args.latent_dim, 'ff_size': args.ff_size,
             'num_layers': args.layers, 'num_heads': args.heads,
             'dropout': 0.1, 'activation': "gelu", 'cond_mode': cond_mode,
             'cond_mask_prob': args.cond_mask_prob, 'max_joints': max_joints,
-            'feature_len':feature_len,  'value_emb': args.value_emb, 'root_input_feats': 3,
+            'feature_len':feature_len,  'value_emb': args.value_emb, 'root_input_feats': feature_len,
             'video_feature_mode': args.video_feature_mode,
             'video_track_dim': args.video_track_dim}
 

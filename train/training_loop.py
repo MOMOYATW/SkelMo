@@ -21,7 +21,9 @@ import torch.distributed as dist
 import time
 
 INITIAL_LOG_LOSS_SCALE = 20.0
-torch.autograd.set_detect_anomaly(True)
+# Anomaly detection retains the full autograd graph and is prohibitively slow
+# for 128-frame training. Targeted smoke tests can enable it locally if needed.
+torch.autograd.set_detect_anomaly(False)
 
 class TrainLoop:
     def __init__(self, args, train_platform, model, diffusion, data):

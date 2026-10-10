@@ -56,6 +56,12 @@ def add_base_options(parser):
     group.add_argument("--device", default=0, type=int, help="Device id to use.")
     group.add_argument("--seed", default=10, type=int, help="For fixing random seed.")
     group.add_argument("--batch_size", default=8, type=int, help="Batch size during training.")
+    group.add_argument(
+        "--gradient_accumulation_steps",
+        default=1,
+        type=int,
+        help="Optimizer step after this many microbatches per rank.",
+    )
     group = parser.add_argument_group('diffusion')
     group.add_argument("--noise_schedule", default='cosine', choices=['linear', 'cosine'], type=str,
                        help="Noise schedule type")
@@ -87,6 +93,12 @@ def add_model_options(parser):
     )
     group.add_argument("--video_track_dim", default=776, type=int,
                        help="Feature width of cached joint tracks.")
+    group.add_argument(
+        "--motion_representation",
+        default="positions",
+        choices=["positions", "positions_rot6d"],
+        help="Predict XYZ only, or XYZ plus rest-relative global 6D rotations.",
+    )
     group.add_argument(
         "--video_cache_filename",
         default="joint_tracks_dinov2_vitb14_fp16.npy",

@@ -30,6 +30,7 @@ def parse_args():
     parser.add_argument("--checkpoint", required=True, type=Path)
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--split", choices=("train", "val", "test"), default="val")
     parser.add_argument("--clip-id", action="append", dest="clip_ids")
     parser.add_argument("--guidance-scale", type=float, default=2.0)
     parser.add_argument("--seed", type=int, default=1234)
@@ -192,7 +193,7 @@ def render_overlay(output, record, predicted, target, parents, metrics):
     return video
 
 
-def build_index(output, checkpoint, rows):
+def build_index(output, checkpoint, split, rows):
     cards = []
     for row in rows:
         metrics = row["metrics"]
@@ -206,14 +207,14 @@ def build_index(output, checkpoint, rows):
             <dt>Rotation error</dt><dd>{metrics['rotation_error_deg']:.1f}° mean / {metrics['rotation_error_median_deg']:.1f}° median</dd></dl></article>"""
         )
     document = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-    <title>SkelMo held-out evaluation</title><style>
+    <title>SkelMo {html.escape(split)} evaluation</title><style>
     body{{margin:0;background:#101419;color:#eef3f7;font:15px/1.45 system-ui,sans-serif}}main{{max-width:1280px;margin:auto;padding:28px}}
     .note{{color:#aebbc7}}article{{background:#192028;border:1px solid #303b46;border-radius:14px;padding:18px;margin:18px 0}}
     h2{{font-size:17px;margin:0}}article p{{color:#9eb0bf}}video{{display:block;width:100%;border-radius:10px;background:#000}}
     dl{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}}dt{{color:#93a5b5}}dd{{font-size:19px;margin:2px 0}}
     @media(max-width:720px){{dl{{grid-template-columns:repeat(2,1fr)}}}}
-    </style></head><body><main><h1>SkelMo held-out validation</h1>
-    <p class="note">Checkpoint {html.escape(checkpoint.name)}. Left: input RGB. Right: ground truth skeleton in cyan and sampled prediction in orange. Metrics are diagnostic only; this is a single stochastic sample per clip.</p>
+    </style></head><body><main><h1>SkelMo {html.escape(split)} split evaluation</h1>
+    <p class="note">Checkpoint {html.escape(checkpoint.name)} · split {html.escape(split)}. Left: input RGB. Right: ground truth skeleton in cyan and sampled prediction in orange. Metrics are diagnostic only; this is a single stochastic sample per clip.</p>
     {''.join(cards)}</main></body></html>"""
     (output / "index.html").write_text(document)
 
@@ -224,7 +225,7 @@ def main():
     cli.output.mkdir(parents=True, exist_ok=True)
     dataset = StaticCameraDataset(
         root=cli.root,
-        split="val",
+        split=cli.split,
         num_frames=args.num_frames,
         temporal_window=args.temporal_window,
         video_cache_filename=args.video_cache_filename,
@@ -296,7 +297,7 @@ def main():
             }
         )
         print(json.dumps(rows[-1], indent=2), flush=True)
-    build_index(cli.output, cli.checkpoint, rows)
+    build_index(cli.output, cli.checkpoint, cli.split, rows)
     (cli.output / "summary.json").write_text(json.dumps(rows, indent=2) + "\n")
     print(cli.output / "index.html")
 

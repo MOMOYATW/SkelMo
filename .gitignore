@@ -18,6 +18,7 @@ save/
 checkpoints/
 outputs/
 runs/
+logs/
 wandb/
 *.pt
 *.pth

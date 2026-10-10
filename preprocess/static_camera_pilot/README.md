@@ -48,6 +48,30 @@ no rendered REST image is encoded or passed to the model, and frame zero is
 not duplicated. Existing `rest.webp` files are inspection artifacts only.
 Absolute camera-space root placement is preserved.
 
+Each joint also receives an offline appearance descriptor that is independent
+of the motion video. `extract_rest_joint_features` renders the animation-free
+mesh from six axis-aligned and eight diagonal views, samples DINOv2 features
+back onto visible vertices, and pools them to joints with skinning weights.
+At load time the 768D appearance descriptor is projected through the same PCA
+basis as the video patches and concatenated with a 128D numeric topology
+descriptor. The 14 rest renders are preprocessing artifacts, never video
+frames.
+
+The deployable visual condition is a cached dense DINO grid rather than a
+ground-truth joint track. DINOv2-B/14 produces 37x37x768 tokens per frame; a
+shared 128D PCA basis preserves the spatial grid while reducing this pilot to
+about 31 GiB. Fit the basis once, then extract restartable shards:
+
+```bash
+python -m preprocess.static_camera_pilot.extract_dense_dino fit-pca \
+  --root /path/to/full --components 128
+python -m preprocess.static_camera_pilot.extract_dense_dino extract \
+  --root /path/to/full --components 128 --num-shards 4 --shard-index 0
+```
+
+The model uses rest appearance+topology as joint queries over these dense
+patches. No ground-truth 2D joint positions are required at inference time.
+
 `rigs/*.npz` stays in unnormalized Y-up source coordinates. Per-clip render
 normalization and the fixed camera live in `motions/*.npz`; therefore adding a
 second motion for the same rig cannot overwrite its canonical rig geometry.

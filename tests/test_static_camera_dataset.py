@@ -39,6 +39,8 @@ class StaticCameraDatasetTests(unittest.TestCase):
             value_emb=False,
             video_feature_mode="joint_tracks",
             video_track_dim=776,
+            video_dense_dim=128,
+            joint_feature_dim=256,
             motion_representation="positions_rot6d",
         )
         config = get_gmdm_args(args)

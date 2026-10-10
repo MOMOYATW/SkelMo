@@ -93,6 +93,10 @@ def add_model_options(parser):
     )
     group.add_argument("--video_track_dim", default=776, type=int,
                        help="Feature width of cached joint tracks.")
+    group.add_argument("--video_dense_dim", default=128, type=int,
+                       help="Feature width of PCA-compressed dense DINO patch tokens.")
+    group.add_argument("--joint_feature_dim", default=256, type=int,
+                       help="Width of concatenated rest appearance and structure features.")
     group.add_argument(
         "--motion_representation",
         default="positions",

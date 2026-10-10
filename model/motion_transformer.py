@@ -113,10 +113,10 @@ class DINOWithTemporalAttention(nn.Module):
         cos, sin = self.rope(f, x.device)
         q, k = apply_rotary_pos_emb(q, k, cos, sin)
 
-        attn = (q.transpose(1, 2) @ k.transpose(1, 2).transpose(-2, -1)) * self.scale
-        attn = attn.softmax(dim=-1)
-
-        out = (attn @ v.transpose(1, 2)).transpose(1, 2)
+        q, k, v = map(lambda tensor: tensor.transpose(1, 2), (q, k, v))
+        # PyTorch dispatches this to memory-efficient/Flash SDPA on supported
+        # CUDA devices, avoiding a materialized [B*H*W, heads, F, F] matrix.
+        out = F.scaled_dot_product_attention(q, k, v).transpose(1, 2)
         out = rearrange(out, 'b f h d -> b f (h d)')
 
         out = self.proj(out)
@@ -294,7 +294,8 @@ class GraphMotionDecoder(nn.TransformerDecoder):
 class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
     def __init__(self, d_model: int, nhead: int, dim_feedforward: int = 2048, dropout: float = 0.1,
                  activation: Union[str, Callable[[Tensor], Tensor]] = F.relu,
-                 compact_video: bool = False):
+                 compact_video: bool = False,
+                 joint_feature_dim: int = 768):
         super().__init__(d_model, nhead, dim_feedforward, dropout, activation)
         self.d_model= d_model
         self.heads = nhead
@@ -304,7 +305,7 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         self.embed_timesteps = nn.Linear(d_model, d_model)
 
 
-        self.dino_proj = nn.Linear(768, d_model)
+        self.dino_proj = nn.Linear(joint_feature_dim, d_model)
         self.video_cross_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
         self.reverse_video_cross_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
         self.rest_pose_cross_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
@@ -355,9 +356,10 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         frames, bs, njoints, feats = x.size()
         orig_shape = video_features.shape
 
-        video_feat = video_features.flatten(3, 4).permute(0, 1, 3, 2)
+        video_feat = video_features.flatten(2, 3)
+        token_count = video_feat.shape[2]
 
-        query = video_feat.permute(2, 0, 1, 3).reshape(1369, bs * frames, feats)
+        query = video_feat.permute(2, 0, 1, 3).reshape(token_count, bs * frames, feats)
 
         key = value = x.permute(2, 1, 0, 3).reshape(njoints, bs * frames, feats)
 
@@ -371,8 +373,8 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
             key_padding_mask=rev_kp_mask
         )
 
-        attn_output = attn_output.view(1369, bs, frames, feats).permute(1, 2, 0, 3)
-        video_feat_out = attn_output.permute(0, 1, 3, 2).reshape(orig_shape)
+        attn_output = attn_output.view(token_count, bs, frames, feats).permute(1, 2, 0, 3)
+        video_feat_out = attn_output.reshape(orig_shape)
 
         return self.skeleton_dropout(video_feat_out)
 
@@ -382,12 +384,13 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         frames, bs, njoints, feats = x.size()
 
         video_feat = video_features.flatten(2, 3)
+        token_count = video_feat.shape[2]
 
         query = x.permute(2, 1, 0, 3).reshape(njoints, bs * frames, feats)
-        key = value = video_feat.permute(2, 0, 1, 3).reshape(1369, bs * frames, feats)
+        key = value = video_feat.permute(2, 0, 1, 3).reshape(token_count, bs * frames, feats)
 
         if video_key_padding_mask is not None:
-            video_kp_mask = video_key_padding_mask.repeat_interleave(1369, dim=0)
+            video_kp_mask = video_key_padding_mask.repeat_interleave(token_count, dim=0)
         else:
             video_kp_mask = None
 
@@ -467,21 +470,19 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
                 input_video + self.skeleton_dropout(x.permute(1, 0, 2, 3))
             )
         else:
-            input_video = self.dino_spatial_attn(input_video)
-            input_video = self.dino_temporal_attn(input_video)
+            # Dense DINO is a fixed visual memory.  Updating all 1369 patches
+            # spatially and temporally in every decoder layer is both redundant
+            # with the frozen backbone and prohibitive for 128-frame clips.
             video_attn_output = self._video_cross_attn_block(
                 x, input_video, tgt_key_padding_mask
             )
             x = self.norm_video(x + video_attn_output)
-            skeleton_attn_output = self._reverse_video_cross_attn_block(
-                x, input_video, tgt_key_padding_mask
-            )
-            input_video = self.norm_skeleton(skeleton_attn_output + input_video)
         dino_attn_output = self._rest_pose_cross_attn_block(
             x, y['joints_names_embs'].to(x.device), None
         )
         x = self.norm_dino(x + dino_attn_output)
         x = self.norm3(x + self._ff_block(x))
 
-        input_video = self.norm_skeleton_2(input_video + self._ff_block_2(input_video))
+        if self.compact_video:
+            input_video = self.norm_skeleton_2(input_video + self._ff_block_2(input_video))
         return x, input_video

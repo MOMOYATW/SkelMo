@@ -75,6 +75,31 @@ def _structural_joint_features(rest, parents, width=768):
     return features[:, :width].astype(np.float32)
 
 
+def _appearance_joint_features(root, record, joint_names):
+    """Load 14-view DINO descriptors in the rig's canonical joint order."""
+    asset = Path(record["asset_path"]).stem.split("_", 1)[0]
+    feature_root = root / "rest_joint_features" / asset
+    averaged_path = feature_root / "joint_averaged_features.npy"
+    dominant_path = feature_root / "joint_max_weight_features.npy"
+    if not averaged_path.is_file() or not dominant_path.is_file():
+        raise FileNotFoundError(f"Missing rest joint features for {asset}: {feature_root}")
+    averaged = np.load(averaged_path, allow_pickle=True).item()
+    dominant = np.load(dominant_path, allow_pickle=True).item()
+    features = []
+    for name in np.asarray(joint_names).astype(str):
+        base = name.replace("_end_site", "")
+        feature = dominant.get(name, dominant.get(base))
+        if feature is None:
+            feature = averaged.get(name, averaged.get(base))
+        if feature is None:
+            raise KeyError(f"No 14-view DINO feature for joint {name!r} in {asset}")
+        features.append(feature)
+    features = np.asarray(features, dtype=np.float32)
+    if features.shape != (len(joint_names), 768):
+        raise ValueError(f"Invalid rest feature shape for {asset}: {features.shape}")
+    return features
+
+
 class StaticCameraDataset(data.Dataset):
     def __init__(
         self,
@@ -83,6 +108,7 @@ class StaticCameraDataset(data.Dataset):
         num_frames,
         temporal_window,
         video_cache_filename,
+        video_feature_mode="dense_dino",
         motion_representation="positions_rot6d",
         joint_permutation_prob=0.0,
         joint_feature_dropout_prob=0.0,
@@ -94,6 +120,7 @@ class StaticCameraDataset(data.Dataset):
         self.root = Path(root)
         self.max_motion_length = int(num_frames)
         self.video_cache_filename = video_cache_filename
+        self.video_feature_mode = video_feature_mode
         self.motion_representation = motion_representation
         self.joint_permutation_prob = float(joint_permutation_prob)
         self.joint_feature_dropout_prob = float(joint_feature_dropout_prob)
@@ -107,6 +134,12 @@ class StaticCameraDataset(data.Dataset):
         if motion_representation not in {"positions", "positions_rot6d"}:
             raise ValueError(f"Unsupported motion representation: {motion_representation}")
         self.feature_len = 9 if motion_representation == "positions_rot6d" else 3
+        pca_path = self.root / "dense_dino" / "pca_128.npz"
+        if not pca_path.is_file():
+            raise FileNotFoundError(f"Missing shared video/rest DINO PCA basis: {pca_path}")
+        with np.load(pca_path, allow_pickle=False) as pca:
+            self.dino_pca_mean = pca["mean"].astype(np.float32)
+            self.dino_pca_components = pca["components"].astype(np.float32)
         stats_path = self.root / "training_stats.json"
         if not stats_path.is_file():
             raise FileNotFoundError(
@@ -173,13 +206,24 @@ class StaticCameraDataset(data.Dataset):
         padded_motion[:length] = motion
         motion = padded_motion
 
-        track_path = self.root / "tracks" / f"{clip_id}.{self.video_cache_filename}"
-        if not track_path.is_file():
-            raise FileNotFoundError(f"Missing video track cache: {track_path}")
-        tracks = np.asarray(np.load(track_path, mmap_mode="r")[start:start + length]).copy()
-        if tracks.shape[:2] != (length, len(parents)):
+        if self.video_feature_mode == "joint_tracks":
+            cache_root = self.root / "tracks"
+        elif self.video_feature_mode == "dense_dino":
+            cache_root = self.root / "dense_dino"
+        else:
             raise ValueError(
-                f"Track shape {tracks.shape} does not match T={length}, J={len(parents)}"
+                "StaticCameraDataset expects cached dense_dino or joint_tracks, "
+                f"got {self.video_feature_mode!r}"
+            )
+        track_path = cache_root / f"{clip_id}.{self.video_cache_filename}"
+        if not track_path.is_file():
+            raise FileNotFoundError(f"Missing video feature cache: {track_path}")
+        tracks = np.asarray(np.load(track_path, mmap_mode="r")[start:start + length]).copy()
+        expected_middle = len(parents) if self.video_feature_mode == "joint_tracks" else 1369
+        if tracks.shape[:2] != (length, expected_middle):
+            raise ValueError(
+                f"Video cache shape {tracks.shape} does not match "
+                f"T={length}, tokens={expected_middle}"
             )
         tracks = prepend_null_video_token(tracks)
 
@@ -189,33 +233,60 @@ class StaticCameraDataset(data.Dataset):
         offsets = rest_geometry.copy()
         valid = parents >= 0
         offsets[valid] -= rest_geometry[parents[valid]]
-        joint_features = _structural_joint_features(rest_geometry, parents)
+        structure = _structural_joint_features(
+            rest_geometry, parents, width=self.dino_pca_components.shape[1]
+        )
+        structure /= np.maximum(np.linalg.norm(structure, axis=-1, keepdims=True), 1e-8)
+        appearance = _appearance_joint_features(
+            self.root, record, rig["joint_names"]
+        )
+        appearance = (
+            appearance - self.dino_pca_mean
+        ) @ self.dino_pca_components
+        appearance /= np.maximum(
+            np.linalg.norm(appearance, axis=-1, keepdims=True), 1e-8
+        )
+        joint_features = np.concatenate([appearance, structure], axis=-1)
 
         if random.random() < self.leaf_prune_prob:
+            joint_arrays = [
+                (motion, 1), (rest, 0), (offsets, 0), (joint_features, 0)
+            ]
+            if self.video_feature_mode == "joint_tracks":
+                joint_arrays.append((tracks, 1))
             arrays, parents, relations, graph_dist = prune_leaf_joints(
-                [(motion, 1), (rest, 0), (offsets, 0), (joint_features, 0), (tracks, 1)],
+                joint_arrays,
                 parents,
             )
-            motion, rest, offsets, joint_features, tracks = arrays
+            motion, rest, offsets, joint_features = arrays[:4]
+            if self.video_feature_mode == "joint_tracks":
+                tracks = arrays[4]
         if random.random() < self.joint_permutation_prob:
+            joint_arrays = [
+                (motion, 1), (rest, 0), (offsets, 0), (joint_features, 0)
+            ]
+            if self.video_feature_mode == "joint_tracks":
+                joint_arrays.append((tracks, 1))
             arrays, parents, relations, graph_dist = permute_non_root_joints(
-                [(motion, 1), (rest, 0), (offsets, 0), (joint_features, 0), (tracks, 1)],
+                joint_arrays,
                 parents,
                 relations,
                 graph_dist,
             )
-            motion, rest, offsets, joint_features, tracks = arrays
+            motion, rest, offsets, joint_features = arrays[:4]
+            if self.video_feature_mode == "joint_tracks":
+                tracks = arrays[4]
         if self.joint_feature_dropout_prob:
             drop = np.random.random(len(parents)) < self.joint_feature_dropout_prob
             drop[0] = False
             joint_features[drop] = 0
-        if self.video_joint_dropout_prob:
+        if self.video_joint_dropout_prob and self.video_feature_mode == "joint_tracks":
             drop = np.random.random(len(parents)) < self.video_joint_dropout_prob
             drop[0] = False
             tracks[:, drop] = 0
 
         padded_tracks = np.zeros(
-            (self.max_motion_length + 1, len(parents), tracks.shape[-1]),
+            (self.max_motion_length + 1, expected_middle, tracks.shape[-1]),
             dtype=tracks.dtype,
         )
         padded_tracks[:len(tracks)] = tracks
@@ -236,5 +307,5 @@ class StaticCameraDataset(data.Dataset):
             std,
             padded_tracks,
             self.opt.max_joints,
-            "joint_tracks",
+            self.video_feature_mode,
         )

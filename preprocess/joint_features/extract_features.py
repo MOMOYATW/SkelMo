@@ -91,7 +91,16 @@ def load_model(
     import torch
 
     if family == "dinov2":
-        model = torch.hub.load("facebookresearch/dinov2", model_name, pretrained=True)
+        # Keep rest-pose descriptors in exactly the same feature space as the
+        # cached video descriptors.  The current upstream torch-hub checkout
+        # also uses Python 3.10 union annotations and cannot be imported by the
+        # Python 3.8 training environment on 8000a.
+        import timm
+
+        timm_name = {
+            "dinov2_vitb14": "vit_base_patch14_dinov2.lvd142m",
+        }.get(model_name, model_name)
+        model = timm.create_model(timm_name, pretrained=True, num_classes=0)
     else:
         if checkpoint is None or not checkpoint.is_file():
             raise FileNotFoundError("--family dinov3 requires a valid --checkpoint")
@@ -148,7 +157,19 @@ def extract_patch_maps(model, images, device: str):
 
     with torch.inference_mode():
         output = model.forward_features(images.to(device))
-        tokens = output["x_norm_patchtokens"]
+        if isinstance(output, dict):
+            if "x_norm_patchtokens" in output:
+                tokens = output["x_norm_patchtokens"]
+            elif "x_prenorm" in output:
+                tokens = output["x_prenorm"][:, 1:]
+            else:
+                raise RuntimeError(
+                    f"Unsupported DINO feature dictionary: {output.keys()}"
+                )
+        else:
+            # timm returns [B, class+register+patch tokens, D].  For this
+            # ViT-B/14 checkpoint there is one class token and no registers.
+            tokens = output[:, 1:]
     token_count = int(tokens.shape[1])
     side = int(round(math.sqrt(token_count)))
     if side * side != token_count:

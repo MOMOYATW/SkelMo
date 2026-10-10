@@ -25,6 +25,20 @@ def create_sin_embedding(positions: torch.Tensor, dim: int, max_period: float = 
     phase = positions / (max_period_tensor ** (adim / (half_dim - 1)))
     return torch.cat([torch.cos(phase), torch.sin(phase)], dim=-1)
 
+
+def create_2d_sin_embedding(height: int, width: int, dim: int, device) -> torch.Tensor:
+    """Return a deterministic ``[H,W,D]`` position code for dense video patches."""
+    if dim % 4:
+        raise ValueError(f"2D sinusoidal embeddings require dim divisible by 4, got {dim}")
+    yy, xx = torch.meshgrid(
+        torch.arange(height, device=device),
+        torch.arange(width, device=device),
+        indexing="ij",
+    )
+    y_embedding = create_sin_embedding(yy.reshape(1, -1, 1), dim // 2)[0]
+    x_embedding = create_sin_embedding(xx.reshape(1, -1, 1), dim // 2)[0]
+    return torch.cat([x_embedding, y_embedding], dim=-1).reshape(height, width, dim)
+
 class SkelMo(nn.Module):
     def __init__(self, max_joints, feature_len,
                  latent_dim=256, ff_size=1024, num_layers=8, num_heads=4, dropout=0.1,
@@ -47,6 +61,8 @@ class SkelMo(nn.Module):
         self.value_emb=kargs.get('value_emb', False)
         self.video_feature_mode = kargs.get('video_feature_mode', 'rgb')
         self.video_track_dim = int(kargs.get('video_track_dim', 776))
+        self.video_dense_dim = int(kargs.get('video_dense_dim', 128))
+        self.joint_feature_dim = int(kargs.get('joint_feature_dim', 768))
         if self.video_feature_mode not in {'rgb', 'dense_dino', 'joint_tracks'}:
             raise ValueError(f"Unsupported video feature mode: {self.video_feature_mode}")
         self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim)
@@ -60,7 +76,8 @@ class SkelMo(nn.Module):
                                                             dim_feedforward=self.ff_size,
                                                             dropout=self.dropout,
                                                             activation=self.activation,
-                                                            compact_video=self.video_feature_mode == 'joint_tracks')
+                                                            compact_video=self.video_feature_mode == 'joint_tracks',
+                                                            joint_feature_dim=self.joint_feature_dim)
         self.seqTransDecoder = GraphMotionDecoder(seqTransDecoderLayer,
                                                         num_layers=self.num_layers, value_emb=self.value_emb)
 
@@ -71,6 +88,12 @@ class SkelMo(nn.Module):
             self.video_proj = nn.Sequential(
                 nn.LayerNorm(self.video_track_dim),
                 nn.Linear(self.video_track_dim, self.latent_dim),
+            )
+            self.visual_model = None
+        elif self.video_feature_mode == 'dense_dino':
+            self.video_proj = nn.Sequential(
+                nn.LayerNorm(self.video_dense_dim),
+                nn.Linear(self.video_dense_dim, self.latent_dim),
             )
             self.visual_model = None
         else:
@@ -113,11 +136,14 @@ class SkelMo(nn.Module):
             video_dino = video_dino + self.visual_token_type_embedding(token_types)[None, :, None]
             video_dino = video_dino.masked_fill(~valid[..., None], 0)
         else:
-            if inference is None:
-                inference = self.video_feature_mode == 'dense_dino' or video_dino.ndim == 4
-            if inference:
-                B, F, token_count, channels = video_dino.shape
-                features = video_dino.reshape(B * F, token_count, channels)
+            if self.video_feature_mode == 'dense_dino':
+                if video_dino.ndim != 4 or video_dino.shape[-1] != self.video_dense_dim:
+                    raise ValueError(
+                        "dense_dino expects [B,F,P,D] with "
+                        f"D={self.video_dense_dim}; received {tuple(video_dino.shape)}"
+                    )
+                B, F, patch_count, _ = video_dino.shape
+                patch_feats = video_dino.float()
             else:
                 if self.visual_model is None:
                     raise RuntimeError("Raw RGB input requested without a visual backbone.")
@@ -125,20 +151,37 @@ class SkelMo(nn.Module):
                 features = self.visual_model.forward_features(
                     video_dino.reshape(-1, C, H, W).float()
                 )
-
-            patch_feats = features[:, 1:, :]
-            patch_count = patch_feats.shape[1]
+                if isinstance(features, dict):
+                    patch_feats = features.get('x_norm_patchtokens')
+                    if patch_feats is None:
+                        patch_feats = features['x_prenorm'][:, 1:]
+                else:
+                    patch_feats = features[:, 1:]
+                patch_count = patch_feats.shape[1]
+                patch_feats = patch_feats.reshape(B, F, patch_count, -1)
             side = int(patch_count ** 0.5)
             if side * side != patch_count:
                 raise ValueError(f"DINO patch count is not square: {patch_count}")
             video_dino = patch_feats.reshape(B, F, side, side, -1)
             video_dino = self.video_proj(video_dino)
+            video_dino = video_dino + create_2d_sin_embedding(
+                side, side, self.latent_dim, video_dino.device
+            )[None, None]
             token_types = torch.ones(F, dtype=torch.long, device=x.device)
             # Slot zero is a learned-type null aligned with numeric REST geometry.
             token_types[0] = 0
             video_dino = video_dino + self.visual_token_type_embedding(
                 token_types
             )[None, :, None, None]
+            valid_frames = torch.arange(F, device=x.device)[None] < (
+                y['lengths'].to(x.device)[:, None] + 1
+            )
+            video_dino = video_dino.masked_fill(
+                ~valid_frames[:, :, None, None, None], 0
+            )
+            # Slot zero is structural only; no rendered rest image or patch
+            # position should leak into it.
+            video_dino[:, 0] = self.visual_token_type_embedding.weight[0]
 
         bs, njoints, nfeats, nframes = x.shape
         timesteps_emb = create_sin_embedding(timesteps.view(1, -1, 1), self.latent_dim)[0]

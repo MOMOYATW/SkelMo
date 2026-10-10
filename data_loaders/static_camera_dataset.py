@@ -155,6 +155,10 @@ class StaticCameraDataset(data.Dataset):
         rest, _ = _root_aligned_rest(
             values["rest_global_position_gravity_camera"], positions[start], parents
         )
+        # Preserve camera-space geometry for topology descriptors.  The per-axis
+        # training normalization below is useful for the model target, but would
+        # otherwise distort bone directions and relative lengths.
+        rest_geometry = rest.copy()
         if self.motion_representation == "positions_rot6d":
             identity6 = np.tile(
                 np.asarray([1, 0, 0, 0, 1, 0], dtype=np.float32),
@@ -182,10 +186,10 @@ class StaticCameraDataset(data.Dataset):
         relations, graph_dist = create_topology_edge_relations(
             parents.tolist(), max_path_len=MAX_PATH_LEN
         )
-        offsets = rest[:, :3].copy()
+        offsets = rest_geometry.copy()
         valid = parents >= 0
-        offsets[valid] -= rest[parents[valid], :3]
-        joint_features = _structural_joint_features(rest[:, :3], parents)
+        offsets[valid] -= rest_geometry[parents[valid]]
+        joint_features = _structural_joint_features(rest_geometry, parents)
 
         if random.random() < self.leaf_prune_prob:
             arrays, parents, relations, graph_dist = prune_leaf_joints(

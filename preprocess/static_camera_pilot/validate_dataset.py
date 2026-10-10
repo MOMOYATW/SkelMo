@@ -53,6 +53,19 @@ def validate_record(record_path):
                     f"got {rest_image.size}"
                 )
 
+    camera_meta = json.loads((Path(record["render_dir"]) / "v000.json").read_text())
+    azimuth_deg = float(np.rad2deg(camera_meta["azimuth"]))
+    expected_azimuth = float(record.get("camera_azimuth_deg", azimuth_deg))
+    angular_error = abs((azimuth_deg - expected_azimuth + 180.0) % 360.0 - 180.0)
+    if angular_error > 1e-5:
+        errors.append(
+            f"camera azimuth mismatch: metadata={azimuth_deg}, record={expected_azimuth}"
+        )
+    if "camera_azimuth_deg" in motion and not np.isclose(
+        float(motion["camera_azimuth_deg"]), expected_azimuth, atol=1e-5
+    ):
+        errors.append("motion camera azimuth does not match record")
+
     numeric = [motion[key] for key in motion.files if motion[key].dtype.kind in "fci"]
     if not all(np.isfinite(value).all() for value in numeric):
         errors.append("motion contains NaN or Inf")
@@ -79,7 +92,7 @@ def validate_record(record_path):
         motion["joint_position_world"],
         motion["world_to_camera_cv"],
         motion["intrinsics"],
-        json.loads((Path(record["render_dir"]) / "v000.json").read_text())["resolution"],
+        camera_meta["resolution"],
     )
     projection_error = float(np.max(np.abs(uv - motion["joint_position_2d_px"])))
     if projection_error > 1e-3:
@@ -100,7 +113,7 @@ def validate_record(record_path):
         motion["rest_global_position_world"],
         motion["world_to_camera_cv"],
         motion["intrinsics"],
-        json.loads((Path(record["render_dir"]) / "v000.json").read_text())["resolution"],
+        camera_meta["resolution"],
     )
     if not np.allclose(rest_uv, motion["rest_global_position_2d_px"], atol=1e-3):
         errors.append("rest-pose projection mismatch")
@@ -115,6 +128,7 @@ def validate_record(record_path):
         "projection_error_px": projection_error,
         "camera_inverse_error": camera_inverse_error,
         "in_frame_fraction": float(in_frame.mean()),
+        "camera_azimuth_deg": expected_azimuth,
     }
 
 
@@ -138,7 +152,7 @@ def main():
             f"expected {args.expected} records, found {len(record_paths)}"
         ]
     summary = {
-        "format": "skelmo_static_camera_validation_v1",
+        "format": "skelmo_static_camera_validation_v2",
         "records": len(record_paths),
         "unique_rigs": len(rigs),
         "failures": failures,
@@ -149,6 +163,12 @@ def main():
         ),
         "min_in_frame_fraction": min(
             (m["in_frame_fraction"] for m in metrics), default=0.0
+        ),
+        "min_camera_azimuth_deg": min(
+            (m["camera_azimuth_deg"] for m in metrics), default=0.0
+        ),
+        "max_camera_azimuth_deg": max(
+            (m["camera_azimuth_deg"] for m in metrics), default=0.0
         ),
     }
     (args.root / "validation.json").write_text(

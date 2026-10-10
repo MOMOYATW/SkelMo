@@ -2,7 +2,10 @@ import unittest
 
 import numpy as np
 
-from preprocess.static_camera_pilot.build_dataset import _select_action
+from preprocess.static_camera_pilot.build_dataset import (
+    _select_action,
+    deterministic_camera_azimuth,
+)
 from preprocess.static_camera_pilot.geometry import (
     matrix_to_rotation_6d_columns,
     normalized_yup_camera,
@@ -75,6 +78,15 @@ class StaticCameraGeometryTests(unittest.TestCase):
         }
         actions = ["Armature|cowboy1@walking|BaseLayer_Armature"]
         self.assertEqual(_select_action(row, actions), actions[0])
+
+    def test_random_camera_yaw_is_deterministic_and_clip_specific(self):
+        first = deterministic_camera_azimuth("clip-a", 20261010)
+        repeated = deterministic_camera_azimuth("clip-a", 20261010)
+        second = deterministic_camera_azimuth("clip-b", 20261010)
+        self.assertEqual(first, repeated)
+        self.assertGreaterEqual(first, -180.0)
+        self.assertLess(first, 180.0)
+        self.assertNotEqual(first, second)
 
 
 if __name__ == "__main__":

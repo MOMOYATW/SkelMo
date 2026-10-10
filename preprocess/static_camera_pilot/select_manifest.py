@@ -109,13 +109,13 @@ def select_records(dataset_root, count, seed, min_frames, max_joints):
         split = "train" if index < boundaries[0] else "val" if index < boundaries[1] else "test"
         row.update(
             {
-                "format": "skelmo_static_camera_selection_v1",
+                "format": "skelmo_static_camera_selection_v2",
                 "clip_id": f"{row['object_id']}_a{int(row['clip_index']):03d}",
                 "rig_id": row["object_id"],
                 "split": split,
                 "fps": 30,
                 "max_frames": 128,
-                "camera": "static_front",
+                "camera": "static_random_yaw",
             }
         )
     return selected
@@ -139,10 +139,10 @@ def main():
         for row in rows:
             handle.write(json.dumps(row, sort_keys=True) + "\n")
     summary = {
-        "format": "skelmo_static_camera_selection_summary_v1",
+        "format": "skelmo_static_camera_selection_summary_v2",
         "count": len(rows),
         "seed": args.seed,
-        "camera": "static_front",
+        "camera": "static_random_yaw",
         "fps": 30,
         "max_frames": 128,
         "splits": Counter(row["split"] for row in rows),

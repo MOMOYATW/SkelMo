@@ -1,7 +1,9 @@
 # Static-camera pilot
 
-This pilot deliberately uses one fixed front camera per clip. Moving cameras
-are deferred until rendered backgrounds provide enough ego-motion evidence.
+This pilot deliberately uses one static camera per clip. Its yaw is sampled
+deterministically and uniformly over 360 degrees from the clip id and camera
+seed, while elevation remains zero. Moving cameras are deferred until rendered
+backgrounds provide enough ego-motion evidence.
 
 The source is the local Objaverse-XL Rigged Animated collection. Selection is
 one motion per asset, round-robin balanced by raw joint-count bins, so 1,024
@@ -10,7 +12,7 @@ clips also means 1,024 distinct rigs.
 ```bash
 python -m preprocess.static_camera_pilot.select_manifest \
   --dataset-root /home/ytao/Experiment/UniMate/dataset/Objaverse-XL-Rigged-Animated \
-  --output /home/ytao/Datasets/skelmo_static_pilot_v1/selection.jsonl
+  --output /home/ytao/Datasets/skelmo_static_pilot_v2_random_yaw/selection.jsonl
 ```
 
 The initial render contract is 512x512, 30 fps, at most 128 frames, transparent
@@ -26,10 +28,10 @@ Build a smoke set with UniMate's Blender-enabled Python:
 ```bash
 CUDA_VISIBLE_DEVICES=7 /home/ytao/miniconda3/envs/unimate/bin/python \
   -m preprocess.static_camera_pilot.build_dataset \
-  --selection /home/ytao/Datasets/skelmo_static_pilot_v1/selection.jsonl \
+  --selection /home/ytao/Datasets/skelmo_static_pilot_v2_random_yaw/selection.jsonl \
   --dataset-root /home/ytao/Experiment/UniMate/dataset/Objaverse-XL-Rigged-Animated \
   --unimate-root /home/ytao/Experiment/UniMate \
-  --output /home/ytao/Datasets/skelmo_static_pilot_v1/smoke \
+  --output /home/ytao/Datasets/skelmo_static_pilot_v2_random_yaw/smoke \
   --limit 1 --resolution 256 --max-frames 32 --samples 16
 ```
 
@@ -61,7 +63,7 @@ Validate every completed record before training:
 ```bash
 /home/ytao/miniconda3/envs/anytop/bin/python \
   -m preprocess.static_camera_pilot.validate_dataset \
-  --root /home/ytao/Datasets/skelmo_static_pilot_v1/smoke --expected 8
+  --root /home/ytao/Datasets/skelmo_static_pilot_v2_random_yaw/smoke --expected 8
 ```
 
 For direct pixel/label inspection, `render_overlay` draws the projected bones

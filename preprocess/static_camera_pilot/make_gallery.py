@@ -31,6 +31,7 @@ def main():
         motion_overlay = root / "overlays" / f"{clip_id}_f000.webp"
         metadata = (
             f"{record['joint_count']} joints · {record['frame_count']} frames · "
+            f"yaw {float(record.get('camera_azimuth_deg', 0.0)):+.1f}° · "
             f"{record.get('split', 'unknown')}"
         )
         overlay_html = ""
@@ -63,10 +64,10 @@ def main():
     )
     document = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SkelMo static-camera pilot</title>
+<title>SkelMo random-yaw static-camera pilot</title>
 <style>
 body{{margin:0;background:#11151a;color:#e9eef4;font:15px/1.45 system-ui,sans-serif}}main{{max-width:1400px;margin:auto;padding:28px}}h1{{margin:0 0 6px}}.summary{{color:#aab8c5;margin:0 0 24px}}article{{background:#1a2028;border:1px solid #303a45;border-radius:14px;padding:18px;margin:18px 0}}h2{{font-size:16px;margin:0}}article>p{{color:#93a4b5;margin:4px 0 14px}}.pair{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}}figure{{margin:0}}img,video{{display:block;width:100%;aspect-ratio:1;object-fit:contain;border-radius:9px;background-color:#dae0e5;background-image:linear-gradient(45deg,#c8d0d8 25%,transparent 25%),linear-gradient(-45deg,#c8d0d8 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#c8d0d8 75%),linear-gradient(-45deg,transparent 75%,#c8d0d8 75%);background-size:24px 24px;background-position:0 0,0 12px,12px -12px,-12px 0}}figcaption{{color:#b8c5d1;margin-top:7px}}details{{margin-top:14px}}summary{{cursor:pointer;color:#8fc6ff}}@media(max-width:720px){{.pair{{grid-template-columns:1fr}}}}
-</style></head><body><main><h1>SkelMo static-camera pilot</h1><p class="summary">{html.escape(status)}. REST and motion share the exact camera, normalization, crop, and transparent background.</p>{''.join(cards)}</main></body></html>"""
+</style></head><body><main><h1>SkelMo random-yaw static-camera pilot</h1><p class="summary">{html.escape(status)}. Each clip samples one deterministic yaw; REST and motion share the exact camera, normalization, crop, and transparent background.</p>{''.join(cards)}</main></body></html>"""
     output.write_text(document)
     print(output)
 

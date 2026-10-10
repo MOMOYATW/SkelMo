@@ -7,6 +7,7 @@ The UniMate checkout is imported but never modified.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -84,6 +85,16 @@ def _select_action(row, action_names):
             f"name_matches={name_matches}"
         )
     return selected
+
+
+def deterministic_camera_azimuth(clip_id, seed, minimum=-180.0, maximum=180.0):
+    """Map a clip id to a reproducible uniform static-camera yaw in degrees."""
+    if not minimum < maximum:
+        raise ValueError("camera azimuth minimum must be smaller than maximum")
+    payload = f"{int(seed)}|{clip_id}".encode("utf-8")
+    integer = int.from_bytes(hashlib.sha256(payload).digest()[:8], "little")
+    unit = integer / float(2**64)
+    return float(minimum + unit * (maximum - minimum))
 
 
 def _sample_anchors(mesh, skin_matrix, count):
@@ -205,6 +216,16 @@ def _build_one(row, args, api):
     action_name = _select_action(row, action_names)
     start_frame, raw_end_frame = frame_ranges[action_name]
     end_frame = min(raw_end_frame, start_frame + args.max_frames - 1)
+    camera_azimuth_deg = deterministic_camera_azimuth(
+        clip_id,
+        args.camera_seed,
+        args.camera_azimuth_min,
+        args.camera_azimuth_max,
+    )
+    view_name = "random_yaw"
+    # UniMate exposes named views; registering one in-memory keeps that repo
+    # untouched while reusing its tested normalization/render implementation.
+    api["blender_render"].VIEW_AZIMUTH_BY_NAME[view_name] = camera_azimuth_deg
 
     meshes = api["find_meshes"]()
     mesh = api["choose_main_mesh"](meshes)
@@ -243,7 +264,7 @@ def _build_one(row, args, api):
         camera_dist=args.camera_dist,
         scene_scale=args.scene_scale,
         resolution=args.resolution,
-        views=["front"],
+        views=[view_name],
         render_video=False,
         render_frames=True,
         compose_video=args.video,
@@ -311,8 +332,9 @@ def _build_one(row, args, api):
     )
     _atomic_npz(
         motion_path,
-        format=np.asarray("skelmo_static_motion_v1"),
+        format=np.asarray("skelmo_static_motion_v2"),
         fps=np.asarray(args.fps, dtype=np.int32),
+        camera_azimuth_deg=np.asarray(camera_azimuth_deg, dtype=np.float32),
         frame_start=np.asarray(start_frame, dtype=np.int32),
         frame_end=np.asarray(end_frame, dtype=np.int32),
         source_yup_to_world=transforms["source_yup_to_world"].astype(np.float32),
@@ -348,7 +370,7 @@ def _build_one(row, args, api):
         )
     record = {
         **row,
-        "format": "skelmo_static_camera_record_v1",
+        "format": "skelmo_static_camera_record_v2",
         "asset_path": str(asset_path),
         "action_name_blender": action_name,
         "frame_start": start_frame,
@@ -363,6 +385,10 @@ def _build_one(row, args, api):
         "rotation_6d_layout": "first_column_xyz_then_second_column_xyz",
         "visibility_target": "in_frame_only_no_occlusion_test",
         "camera_motion": "none",
+        "camera": "static_random_yaw",
+        "camera_seed": args.camera_seed,
+        "camera_azimuth_deg": camera_azimuth_deg,
+        "camera_elevation_deg": 0.0,
     }
     _atomic_json(record_path, record)
     return "complete"
@@ -383,6 +409,9 @@ def main():
     parser.add_argument("--samples", default=32, type=int)
     parser.add_argument("--image-quality", default=90, type=int)
     parser.add_argument("--camera-dist", default=1.5, type=float)
+    parser.add_argument("--camera-seed", default=20261010, type=int)
+    parser.add_argument("--camera-azimuth-min", default=-180.0, type=float)
+    parser.add_argument("--camera-azimuth-max", default=180.0, type=float)
     parser.add_argument("--scene-scale", default=1.0, type=float)
     parser.add_argument("--anchor-count", default=512, type=int)
     parser.add_argument("--video", action=argparse.BooleanOptionalAction, default=True)
@@ -391,6 +420,8 @@ def main():
     args = parser.parse_args()
     if args.worker_id < 0 or args.worker_id >= args.num_workers:
         parser.error("worker-id must satisfy 0 <= worker-id < num-workers")
+    if args.camera_azimuth_min >= args.camera_azimuth_max:
+        parser.error("camera-azimuth-min must be smaller than camera-azimuth-max")
 
     sys.path.insert(0, str(args.unimate_root.resolve()))
     from data_process.utils.blender_export import (
@@ -399,6 +430,7 @@ def main():
         extract_all_actions,
         prepare_skeleton,
     )
+    from data_process.utils import blender_render
     from data_process.utils.blender_render import (
         enable_color_output,
         find_meshes,
@@ -418,7 +450,7 @@ def main():
     _atomic_json(
         args.output / "build_config.json",
         {
-            "format": "skelmo_static_camera_build_config_v1",
+            "format": "skelmo_static_camera_build_config_v2",
             "selection": str(args.selection.resolve()),
             "dataset_root": str(args.dataset_root.resolve()),
             "unimate_root": str(args.unimate_root.resolve()),
@@ -426,7 +458,13 @@ def main():
             "max_frames": args.max_frames,
             "resolution": args.resolution,
             "samples": args.samples,
-            "camera": "static_front",
+            "camera": "static_random_yaw",
+            "camera_seed": args.camera_seed,
+            "camera_azimuth_range_deg": [
+                args.camera_azimuth_min,
+                args.camera_azimuth_max,
+            ],
+            "camera_elevation_deg": 0.0,
             "background": "transparent",
             "rest_conditioning": "separate_same_camera_same_normalization",
         },

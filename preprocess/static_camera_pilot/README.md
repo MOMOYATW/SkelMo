@@ -35,6 +35,12 @@ explicit column-layout 6D representation are retained during the pilot. This
 avoids silently inheriting the row/column ambiguity of older 6D utilities and
 lets us audit twist before choosing the final compact representation.
 
+The model sequence is `[REST, F0, F1, ...]`. REST uses the true rig geometry
+in the same gravity-camera coordinate system as the motion. The aligned video
+stream is `[ZERO, video_F0, video_F1, ...]`: frame zero is not duplicated and
+is never used as a surrogate rest pose. Absolute camera-space root placement
+is preserved.
+
 `rigs/*.npz` stays in unnormalized Y-up source coordinates. Per-clip render
 normalization and the fixed camera live in `motions/*.npz`; therefore adding a
 second motion for the same rig cannot overwrite its canonical rig geometry.

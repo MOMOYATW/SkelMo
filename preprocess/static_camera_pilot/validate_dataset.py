@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .geometry import matrix_to_rotation_6d_columns, project_world_points
+from .geometry import matrix_to_rotation_6d_columns, project_world_points, transform_points
 
 
 def validate_record(record_path):
@@ -26,6 +26,8 @@ def validate_record(record_path):
         "skin_rotation_gravity_camera_matrix": (frames, joints, 3, 3),
         "skin_rotation_gravity_camera_6d": (frames, joints, 6),
         "contact_heuristic": (frames, joints),
+        "rest_global_position_gravity_camera": (joints, 3),
+        "rest_global_position_2d_px": (joints, 2),
     }
     for key, shape in expected_shapes.items():
         if key not in motion or motion[key].shape != shape:
@@ -72,6 +74,26 @@ def validate_record(record_path):
         errors.append("in-frame mask mismatch")
     if not np.allclose(depth, motion["joint_depth_camera_cv"], atol=1e-5):
         errors.append("camera depth mismatch")
+
+    rest_gravity = transform_points(
+        motion["world_to_camera_gravity"], motion["rest_global_position_world"]
+    )
+    if not np.allclose(
+        rest_gravity, motion["rest_global_position_gravity_camera"], atol=1e-5
+    ):
+        errors.append("rest pose is not aligned to the gravity-camera frame")
+    rest_uv, rest_depth, rest_in_frame = project_world_points(
+        motion["rest_global_position_world"],
+        motion["world_to_camera_cv"],
+        motion["intrinsics"],
+        json.loads((Path(record["render_dir"]) / "v000.json").read_text())["resolution"],
+    )
+    if not np.allclose(rest_uv, motion["rest_global_position_2d_px"], atol=1e-3):
+        errors.append("rest-pose projection mismatch")
+    if not np.allclose(rest_depth, motion["rest_depth_camera_cv"], atol=1e-5):
+        errors.append("rest-pose depth mismatch")
+    if not np.array_equal(rest_in_frame, motion["rest_in_frame"]):
+        errors.append("rest-pose in-frame mask mismatch")
 
     return record, errors, {
         "orth_error": orth_error,

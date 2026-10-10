@@ -238,6 +238,15 @@ def _build_one(row, args, api):
     rest_world_positions = transform_points(
         transforms["source_yup_to_world"], rest_source_positions
     )
+    rest_gravity_positions = transform_points(
+        transforms["world_to_camera_gravity"], rest_world_positions
+    )
+    rest_uv, rest_depth, rest_in_frame = project_world_points(
+        rest_world_positions,
+        transforms["world_to_camera_cv"],
+        intrinsics,
+        args.resolution,
+    )
     axes_source = primary_bone_axes(rest_source_positions, parents)
     axes_gravity = axes_source @ transforms["world_to_camera_gravity"][:3, :3].T
     posed_axes_gravity = np.einsum("tjik,jk->tji", skin_rotmat, axes_gravity)
@@ -286,6 +295,10 @@ def _build_one(row, args, api):
         posed_bone_axis_gravity_camera=posed_axes_gravity.astype(np.float32),
         contact_heuristic=contacts,
         rest_global_position_world=rest_world_positions.astype(np.float32),
+        rest_global_position_gravity_camera=rest_gravity_positions.astype(np.float32),
+        rest_global_position_2d_px=rest_uv.astype(np.float32),
+        rest_depth_camera_cv=rest_depth.astype(np.float32),
+        rest_in_frame=rest_in_frame,
         anchor_position_world=anchor_world.astype(np.float32),
     )
     frame_count = end_frame - start_frame + 1

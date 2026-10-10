@@ -11,7 +11,10 @@ from utils.model_util import create_model_and_diffusion_general_skeleton, load_m
 from utils import dist_util
 from data_loaders.truebones.truebones_utils.plot_script import plot_general_skeleton_3d_motion
 from data_loaders.tensors import truebones_batch_collate
-from data_loaders.truebones.data.dataset import create_temporal_mask_for_window
+from data_loaders.truebones.data.dataset import (
+    create_temporal_mask_for_window,
+    prepend_rest_video_token,
+)
 from os.path import join as pjoin
 import BVH
 from InverseKinematics import animation_from_positions
@@ -204,8 +207,8 @@ def create_condition(object_types, cond_dict, n_frames, temporal_window, joints_
             for file in npy_files[:n_frames]:
                 video_dino.append(np.load(os.path.join(features_dir, file))["features"][0])
             video_dino = np.stack(video_dino, axis=0)
-        # Match the rest-pose token prepended to the skeletal sequence.
-        video_dino = np.concatenate([video_dino[:1], video_dino], axis=0)
+        # Match [REST, F0, F1, ...] without treating F0 as the rest pose.
+        video_dino = prepend_rest_video_token(video_dino)
         batch.append(np.zeros((n_frames, n_joints, feature_len)))
         batch.append(n_frames)
         batch.append(parents)

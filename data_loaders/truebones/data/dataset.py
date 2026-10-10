@@ -24,6 +24,42 @@ import json
 from PIL import Image
 from torchvision import transforms
 
+
+GLOBAL_POSITION_MEAN = np.array([-0.00501097, 0.00403511, 0.08854984])
+GLOBAL_POSITION_STD = np.array([0.15595314, 0.25545279, 0.25357881])
+
+
+def absolute_joint_positions(motion):
+    """Convert root-relative non-root positions without erasing root placement."""
+    result = np.asarray(motion).copy()
+    if result.shape[-1] < 3:
+        raise ValueError(f"Motion needs XYZ channels, got shape {result.shape}")
+    result[:, 1:, :3] += result[:, 0:1, :3]
+    return result
+
+
+def true_rest_pose(cond_dict, motion_shape):
+    """Read the rig rest token and reject the old first-motion-frame shortcut."""
+    if 'tpos_first_frame' not in cond_dict:
+        raise KeyError("cond.npy is missing the true rest-pose field 'tpos_first_frame'")
+    rest = np.asarray(cond_dict['tpos_first_frame']).copy()
+    expected = tuple(motion_shape[1:])
+    if rest.shape != expected:
+        if rest.ndim == 2 and rest.shape[0] == expected[0] and rest.shape[1] >= expected[1]:
+            rest = rest[:, :expected[1]]
+        else:
+            raise ValueError(
+                f"True rest pose has shape {rest.shape}; expected {expected} "
+                "to match the motion representation"
+            )
+    return rest
+
+
+def prepend_rest_video_token(video_features):
+    """Prepend an empty visual slot for REST; keep real frame zero exactly once."""
+    video_features = np.asarray(video_features)
+    return np.concatenate([np.zeros_like(video_features[:1]), video_features], axis=0)
+
 def get_mean_std(data):
     if len(data) > 0:
         Mean = data.mean(axis=0)
@@ -75,7 +111,7 @@ def get_motion_parents(motion):
     return parents
 
 def create_temporal_mask_for_window(window, max_len):
-    """Create a local temporal-attention mask with a global rest-pose token."""
+    """Create local motion attention with a global true-rest-pose token."""
     margin = window // 2
     mask = torch.zeros(max_len+1, max_len+1)
     mask[:, 0] = 1
@@ -366,13 +402,14 @@ class MotionDataset(data.Dataset):
         std = cond_dict['std']
         motion, m_length, parents, joints_graph_dist, joints_relations, offsets, joints_names_embs, kinematic_chains = data["motion"], data["length"], data["parents"], data["joints_graph_dist"], data["joints_relations"], data["offsets"], data["joints_names_embs"], data["kinematic_chains"]
         ind = 0
-        global_mean = np.array([-0.00501097,  0.00403511,  0.08854984])
-        global_std = np.array([0.15595314, 0.25545279, 0.25357881])
-        motion[:, 1:] += motion[:, 0:1]
-        motion = motion - motion[0:1, 0:1]
+        global_mean = GLOBAL_POSITION_MEAN
+        global_std = GLOBAL_POSITION_STD
+        motion = absolute_joint_positions(motion)
+        # REST is rig geometry, not the first observed motion frame. Keeping
+        # the root translation also preserves absolute camera-space position.
+        rest_pose = true_rest_pose(cond_dict, motion.shape)
         if m_length < self.max_motion_length:
-            tpos_first_frame = motion[0].copy()
-            tpos_first_frame = (tpos_first_frame - global_mean) / (global_std + 1e-5)
+            tpos_first_frame = (rest_pose - global_mean) / (global_std + 1e-5)
             motion = (motion - global_mean) / (global_std + 1e-5)
             motion = np.concatenate([motion,
                                      np.zeros((self.max_motion_length - m_length, motion.shape[1], motion.shape[2]))
@@ -380,8 +417,7 @@ class MotionDataset(data.Dataset):
         elif m_length >= self.max_motion_length:
             ind = random.randint(0, m_length - self.max_motion_length)
             motion = motion[ind: ind + self.max_motion_length].copy()
-            tpos_first_frame = motion[0].copy()
-            tpos_first_frame = (tpos_first_frame - global_mean) / (global_std + 1e-5)
+            tpos_first_frame = (rest_pose - global_mean) / (global_std + 1e-5)
             motion = (motion - global_mean) / (global_std + 1e-5)
             m_length = self.max_motion_length
 
@@ -462,9 +498,10 @@ class MotionDataset(data.Dataset):
                 drop[0] = False
                 video_dino[:, drop] = 0
 
-        # The skeletal stream has a rest-pose token at t=0. Duplicate the first
-        # observation to align the compact or dense video stream with it.
-        video_dino = np.concatenate([video_dino[:1], video_dino], axis=0)
+        # The skeletal stream is [REST, F0, F1, ...]. REST has no corresponding
+        # input-video frame: its geometry and appearance enter through the rig
+        # conditions, so prepend an empty visual slot and keep F0 only once.
+        video_dino = prepend_rest_video_token(video_dino)
         pad_frames = self.max_motion_length + 1 - len(video_dino)
         if pad_frames > 0:
             video_dino = np.concatenate(

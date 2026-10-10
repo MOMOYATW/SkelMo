@@ -4,14 +4,40 @@ import numpy as np
 import torch
 
 from data_loaders.truebones.data.dataset import (
+    absolute_joint_positions,
     permute_non_root_joints,
+    prepend_rest_video_token,
     prune_leaf_joints,
     subdivide_joint_edge,
+    true_rest_pose,
 )
 from preprocess.video_joint_tracks import match_dino_patches
 
 
 class VideoJointTrackTests(unittest.TestCase):
+    def test_true_rest_token_is_not_the_first_motion_frame(self):
+        motion = np.asarray(
+            [
+                [[2.0, 0.0, 4.0], [0.5, 1.0, 0.0]],
+                [[3.0, 0.0, 5.0], [0.5, 1.0, 0.0]],
+            ],
+            dtype=np.float32,
+        )
+        rest = np.asarray([[0.0, 0.0, 0.0], [0.0, 2.0, 0.0]], dtype=np.float32)
+        absolute = absolute_joint_positions(motion)
+        np.testing.assert_allclose(absolute[:, 0], motion[:, 0])
+        np.testing.assert_allclose(absolute[0, 1], [2.5, 1.0, 4.0])
+        selected_rest = true_rest_pose({'tpos_first_frame': rest}, absolute.shape)
+        np.testing.assert_array_equal(selected_rest, rest)
+        self.assertFalse(np.array_equal(selected_rest, absolute[0]))
+
+    def test_rest_video_slot_is_zero_and_first_frame_is_not_duplicated(self):
+        video = np.arange(3 * 2 * 4, dtype=np.float32).reshape(3, 2, 4) + 1
+        conditioned = prepend_rest_video_token(video)
+        self.assertEqual(conditioned.shape, (4, 2, 4))
+        np.testing.assert_array_equal(conditioned[0], np.zeros_like(video[0]))
+        np.testing.assert_array_equal(conditioned[1:], video)
+
     def test_match_shape_and_finite_statistics(self):
         patches = torch.randn(3, 8, 4, 4)
         queries = torch.randn(5, 8)

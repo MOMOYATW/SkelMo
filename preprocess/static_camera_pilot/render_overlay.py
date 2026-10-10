@@ -14,19 +14,29 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--record", required=True, type=Path)
     parser.add_argument("--frame", default=0, type=int, help="Zero-based clip frame")
+    parser.add_argument("--rest", action="store_true", help="Overlay the aligned rest render")
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     record = json.loads(args.record.read_text())
     motion = np.load(record["motion_path"])
     rig = np.load(record["rig_path"])
-    if not 0 <= args.frame < int(record["frame_count"]):
+    if not args.rest and not 0 <= args.frame < int(record["frame_count"]):
         parser.error("frame is outside the clip")
-    source_frame = int(record["frame_start"]) + args.frame
-    frame_path = Path(record["render_dir"]) / "v000" / f"{source_frame:04d}.webp"
+    if args.rest:
+        frame_path = Path(
+            record.get("rest_render_path", Path(record["render_dir"]) / "rest.webp")
+        )
+    else:
+        source_frame = int(record["frame_start"]) + args.frame
+        frame_path = Path(record["render_dir"]) / "v000" / f"{source_frame:04d}.webp"
     image = Image.open(frame_path).convert("RGBA")
     draw = ImageDraw.Draw(image)
-    uv = motion["joint_position_2d_px"][args.frame]
-    valid = motion["joint_in_frame"][args.frame]
+    if args.rest:
+        uv = motion["rest_global_position_2d_px"]
+        valid = motion["rest_in_frame"]
+    else:
+        uv = motion["joint_position_2d_px"][args.frame]
+        valid = motion["joint_in_frame"][args.frame]
     parents = rig["parents"]
     for joint, parent in enumerate(parents):
         if parent >= 0 and valid[joint] and valid[parent]:

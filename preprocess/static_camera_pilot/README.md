@@ -14,8 +14,12 @@ python -m preprocess.static_camera_pilot.select_manifest \
 ```
 
 The initial render contract is 512x512, 30 fps, at most 128 frames, transparent
-WebP frames plus an H.264 inspection video. Every clip stores the fixed camera
-intrinsics/extrinsics and both normalized world and gravity-camera targets.
+WebP frames plus an H.264 inspection video. Every clip also has a separate
+`rest.webp`, rendered after the action with the exact same fixed camera and
+action-derived scene normalization. REST is deliberately not inserted into the
+MP4 or frame directory, so video and motion label lengths remain identical.
+Every clip stores the fixed camera intrinsics/extrinsics and both normalized
+world and gravity-camera targets.
 
 Build a smoke set with UniMate's Blender-enabled Python:
 
@@ -36,10 +40,11 @@ avoids silently inheriting the row/column ambiguity of older 6D utilities and
 lets us audit twist before choosing the final compact representation.
 
 The model sequence is `[REST, F0, F1, ...]`. REST uses the true rig geometry
-in the same gravity-camera coordinate system as the motion. The aligned video
-stream is `[ZERO, video_F0, video_F1, ...]`: frame zero is not duplicated and
-is never used as a surrogate rest pose. Absolute camera-space root placement
-is preserved.
+in the same gravity-camera coordinate system as the motion. The aligned visual
+stream is `[rendered_REST, video_F0, video_F1, ...]`; frame zero is not
+duplicated and is never used as a surrogate rest pose. Old datasets without a
+rest render can still fall back to an empty compatibility token. Absolute
+camera-space root placement is preserved.
 
 `rigs/*.npz` stays in unnormalized Y-up source coordinates. Per-clip render
 normalization and the fixed camera live in `motions/*.npz`; therefore adding a
@@ -61,3 +66,12 @@ Validate every completed record before training:
 
 For direct pixel/label inspection, `render_overlay` draws the projected bones
 over any chosen WebP frame.
+
+Generate and serve an inspection gallery containing REST, motion video, and
+projected-label overlays:
+
+```bash
+python -m preprocess.static_camera_pilot.make_gallery --root /path/to/smoke
+python -m preprocess.static_camera_pilot.serve_gallery \
+  --root /path/to/smoke --port 8766
+```

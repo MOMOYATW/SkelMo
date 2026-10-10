@@ -4,7 +4,13 @@ from diffusion.respace import SpacedDiffusion, space_timesteps
 
 def load_model(model, state_dict):
     missing_keys, _ = model.load_state_dict(state_dict, strict=False)
-    assert all([k.startswith('clip_model.') or k.endswith('inv_freq') or k.startswith("visual_model.") for k in missing_keys]), f"Missing keys that do not start with 'clip_model.': {missing_keys}"
+    assert all([
+        k.startswith('clip_model.')
+        or k.endswith('inv_freq')
+        or k.startswith("visual_model.")
+        or k.startswith("visual_token_type_embedding.")
+        for k in missing_keys
+    ]), f"Unexpected missing checkpoint keys: {missing_keys}"
 
 def create_model_and_diffusion_general_skeleton(args):
     model = SkelMo(**get_gmdm_args(args))

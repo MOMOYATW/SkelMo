@@ -151,6 +151,35 @@ def _extract_evaluated_globals(armature, joint_names, start_frame, end_frame):
     return positions, rotations, rest_positions, rest_rotations
 
 
+def _render_aligned_rest_pose(render_dir, args, api):
+    """Render true REST using the action render's existing camera/normalization."""
+    import bpy
+
+    armatures = api["get_scene_armatures"]()
+    previous_modes = [armature.data.pose_position for armature in armatures]
+    try:
+        for armature in armatures:
+            armature.data.pose_position = "REST"
+            armature.data.update_tag()
+        bpy.context.view_layer.update()
+        bpy.context.evaluated_depsgraph_get()
+        api["enable_color_output"](
+            args.resolution,
+            str(render_dir),
+            mode="IMAGE",
+            image_format="WEBP",
+            image_quality=args.image_quality,
+        )
+        rest_path = render_dir / "rest.webp"
+        api["render_still"](str(rest_path))
+    finally:
+        for armature, mode in zip(armatures, previous_modes):
+            armature.data.pose_position = mode
+            armature.data.update_tag()
+        bpy.context.view_layer.update()
+    return rest_path
+
+
 def _build_one(row, args, api):
     clip_id = row["clip_id"]
     rig_id = row["rig_id"]
@@ -158,7 +187,14 @@ def _build_one(row, args, api):
     motion_path = args.output / "motions" / f"{clip_id}.npz"
     rig_path = args.output / "rigs" / f"{rig_id}.npz"
     record_path = args.output / "records" / f"{clip_id}.json"
-    if record_path.is_file() and motion_path.is_file() and rig_path.is_file() and not args.overwrite:
+    rest_render_path = render_dir / "rest.webp"
+    if (
+        record_path.is_file()
+        and motion_path.is_file()
+        and rig_path.is_file()
+        and rest_render_path.is_file()
+        and not args.overwrite
+    ):
         return "skipped"
 
     asset_path = args.dataset_root / row["file"]
@@ -217,6 +253,9 @@ def _build_one(row, args, api):
         image_format="WEBP",
         image_quality=args.image_quality,
     )
+    # Do not append REST to the action frames or inspection MP4. It is a
+    # separate conditioning image so motion frame counts remain unambiguous.
+    rest_render_path = _render_aligned_rest_pose(render_dir, args, api)
     camera_meta = json.loads((render_dir / "v000.json").read_text())
     transforms = normalized_yup_camera(
         camera_meta["transform_matrix"],
@@ -317,6 +356,7 @@ def _build_one(row, args, api):
         "frame_count": frame_count,
         "joint_count": len(names),
         "render_dir": str(render_dir),
+        "rest_render_path": str(rest_render_path),
         "motion_path": str(motion_path),
         "rig_path": str(rig_path),
         "rotation_target": "global_skinning_deformation_in_gravity_camera",
@@ -360,10 +400,13 @@ def main():
         prepare_skeleton,
     )
     from data_process.utils.blender_render import (
+        enable_color_output,
         find_meshes,
+        get_scene_armatures,
         init_render_engine,
         load_and_prep_asset,
         render_action_multiview,
+        render_still,
     )
 
     api = locals()
@@ -385,6 +428,7 @@ def main():
             "samples": args.samples,
             "camera": "static_front",
             "background": "transparent",
+            "rest_conditioning": "separate_same_camera_same_normalization",
         },
     )
     counts = {"complete": 0, "skipped": 0, "failed": 0}

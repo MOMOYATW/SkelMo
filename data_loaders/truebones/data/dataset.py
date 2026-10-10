@@ -55,10 +55,40 @@ def true_rest_pose(cond_dict, motion_shape):
     return rest
 
 
-def prepend_rest_video_token(video_features):
-    """Prepend an empty visual slot for REST; keep real frame zero exactly once."""
+def prepend_rest_video_token(video_features, rest_features=None):
+    """Prepend aligned REST features; use a zero only for legacy datasets."""
     video_features = np.asarray(video_features)
-    return np.concatenate([np.zeros_like(video_features[:1]), video_features], axis=0)
+    if video_features.ndim < 2 or len(video_features) == 0:
+        raise ValueError(f"Video features must be a non-empty sequence, got {video_features.shape}")
+    if rest_features is None:
+        rest = np.zeros_like(video_features[0])
+    else:
+        rest = np.asarray(rest_features)
+        if rest.shape == (1,) + video_features.shape[1:]:
+            rest = rest[0]
+        if rest.shape != video_features.shape[1:]:
+            raise ValueError(
+                f"REST features have shape {rest.shape}; expected {video_features.shape[1:]}"
+            )
+        rest = rest.astype(video_features.dtype, copy=False)
+    return np.concatenate([rest[None], video_features], axis=0)
+
+
+def rest_cache_path(video_cache_path):
+    """Return the explicit sidecar path used for an aligned REST feature."""
+    path = Path(video_cache_path)
+    return path.with_name(f"rest_{path.name}")
+
+
+def find_rest_image(image_dir):
+    """Find an aligned REST render without mixing it into motion frame sorting."""
+    image_dir = Path(image_dir)
+    for directory in (image_dir, image_dir.parent):
+        for name in ("rest.webp", "rest.png", "rest.jpg", "rest.jpeg"):
+            candidate = directory / name
+            if candidate.is_file():
+                return candidate
+    return None
 
 def get_mean_std(data):
     if len(data) > 0:
@@ -238,6 +268,7 @@ class MotionDataset(data.Dataset):
 
         self.motions = []
         self.dino_features = []
+        self.rest_dino_features = []
         self.cond_dict = []
         self.points_features = []
         self.points_xyzs = []
@@ -252,7 +283,10 @@ class MotionDataset(data.Dataset):
 
             self.motions.append(gt_motion)
             features_dir = npy_file.parent.parent.parent / f'imgs_{str(npy_file).split("/")[-1][19:-4]}'
-            dino_files = [file for file in os.listdir(features_dir) if file.endswith('.png')]
+            dino_files = [
+                file for file in os.listdir(features_dir)
+                if re.match(r'timestep_\d+_view_\d+\.png$', file)
+            ]
 
             def extract_numbers(filename):
                 match = re.match(r'timestep_(\d+)_view_(\d+)\.png', filename)
@@ -266,6 +300,7 @@ class MotionDataset(data.Dataset):
             if self.video_feature_mode == "rgb":
                 video_source = [features_dir / file for file in dino_files]
                 video_length = len(video_source)
+                rest_source = find_rest_image(features_dir)
             else:
                 video_source = features_dir / self.video_cache_filename
                 if not video_source.exists():
@@ -278,7 +313,10 @@ class MotionDataset(data.Dataset):
                     raise ValueError(f"Expected [T,J,D] joint tracks in {video_source}")
                 if self.video_feature_mode == "dense_dino" and cached.ndim != 3:
                     raise ValueError(f"Expected [T,N,D] dense DINO tokens in {video_source}")
+                rest_candidate = rest_cache_path(video_source)
+                rest_source = rest_candidate if rest_candidate.is_file() else None
             self.dino_features.append(video_source)
+            self.rest_dino_features.append(rest_source)
 
             assert video_length == len(self.motions[-1]), f"Length mismatch between video features and motion for {npy_file}"
 
@@ -425,15 +463,30 @@ class MotionDataset(data.Dataset):
             print(f"Warning: motion values are too large after normalization for index {idx}. Max: {motion.max()}, Min: {motion.min()}")
 
         video_source = self.dino_features[idx]
+        rest_source = self.rest_dino_features[idx]
         if self.video_feature_mode == "rgb":
             frames = []
             for image_path in video_source[ind: ind + m_length]:
                 with Image.open(image_path) as image:
                     frames.append(self.transform(image.convert('RGB')).numpy())
             video_dino = np.stack(frames, axis=0)
+            if rest_source is not None:
+                with Image.open(rest_source) as image:
+                    rest_video_dino = self.transform(image.convert('RGB')).numpy()
+            else:
+                rest_video_dino = None
         else:
             cached = np.load(video_source, mmap_mode="r")
             video_dino = np.asarray(cached[ind: ind + m_length]).copy()
+            rest_video_dino = (
+                np.asarray(np.load(rest_source, mmap_mode="r")).copy()
+                if rest_source is not None
+                else None
+            )
+
+        # Visual tokens now align exactly with skeletal [REST, F0, F1, ...].
+        # Legacy datasets remain readable through the explicit zero fallback.
+        video_dino = prepend_rest_video_token(video_dino, rest_video_dino)
 
         if self.video_feature_mode == "joint_tracks":
             if video_dino.shape[1] != len(parents):
@@ -498,10 +551,6 @@ class MotionDataset(data.Dataset):
                 drop[0] = False
                 video_dino[:, drop] = 0
 
-        # The skeletal stream is [REST, F0, F1, ...]. REST has no corresponding
-        # input-video frame: its geometry and appearance enter through the rig
-        # conditions, so prepend an empty visual slot and keep F0 only once.
-        video_dino = prepend_rest_video_token(video_dino)
         pad_frames = self.max_motion_length + 1 - len(video_dino)
         if pad_frames > 0:
             video_dino = np.concatenate(

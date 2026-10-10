@@ -31,10 +31,17 @@ class VideoJointTrackTests(unittest.TestCase):
         np.testing.assert_array_equal(selected_rest, rest)
         self.assertFalse(np.array_equal(selected_rest, absolute[0]))
 
-    def test_rest_video_slot_is_zero_and_first_frame_is_not_duplicated(self):
+    def test_aligned_rest_video_slot_and_first_frame_is_not_duplicated(self):
         video = np.arange(3 * 2 * 4, dtype=np.float32).reshape(3, 2, 4) + 1
-        conditioned = prepend_rest_video_token(video)
+        rest = np.full((2, 4), 42, dtype=np.float32)
+        conditioned = prepend_rest_video_token(video, rest)
         self.assertEqual(conditioned.shape, (4, 2, 4))
+        np.testing.assert_array_equal(conditioned[0], rest)
+        np.testing.assert_array_equal(conditioned[1:], video)
+
+    def test_missing_rest_video_uses_legacy_zero_fallback(self):
+        video = np.ones((2, 3, 4), dtype=np.float32)
+        conditioned = prepend_rest_video_token(video)
         np.testing.assert_array_equal(conditioned[0], np.zeros_like(video[0]))
         np.testing.assert_array_equal(conditioned[1:], video)
 

@@ -50,6 +50,10 @@ class SkelMo(nn.Module):
         if self.video_feature_mode not in {'rgb', 'dense_dino', 'joint_tracks'}:
             raise ValueError(f"Unsupported video feature mode: {self.video_feature_mode}")
         self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim)
+        # Distinguish the aligned REST conditioning image from observed motion
+        # frames even when their appearances happen to be very similar.
+        self.visual_token_type_embedding = nn.Embedding(2, self.latent_dim)
+        nn.init.zeros_(self.visual_token_type_embedding.weight)
 
         print("Graph transformer init")
         seqTransDecoderLayer = GraphMotionDecoderLayer(d_model=self.latent_dim,
@@ -104,6 +108,9 @@ class SkelMo(nn.Module):
             ) & (
                 joint_ids < y['n_joints'].to(x.device)[:, None, None]
             )
+            token_types = torch.ones(video_dino.shape[1], dtype=torch.long, device=x.device)
+            token_types[0] = 0
+            video_dino = video_dino + self.visual_token_type_embedding(token_types)[None, :, None]
             video_dino = video_dino.masked_fill(~valid[..., None], 0)
         else:
             if inference is None:
@@ -126,6 +133,11 @@ class SkelMo(nn.Module):
                 raise ValueError(f"DINO patch count is not square: {patch_count}")
             video_dino = patch_feats.reshape(B, F, side, side, -1)
             video_dino = self.video_proj(video_dino)
+            token_types = torch.ones(F, dtype=torch.long, device=x.device)
+            token_types[0] = 0
+            video_dino = video_dino + self.visual_token_type_embedding(
+                token_types
+            )[None, :, None, None]
 
         bs, njoints, nfeats, nframes = x.shape
         timesteps_emb = create_sin_embedding(timesteps.view(1, -1, 1), self.latent_dim)[0]

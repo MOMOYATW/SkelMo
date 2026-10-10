@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 
 from .geometry import matrix_to_rotation_6d_columns, project_world_points, transform_points
 
@@ -38,6 +39,19 @@ def validate_record(record_path):
     rendered = len(list((Path(record["render_dir"]) / "v000").glob("*.webp")))
     if rendered != frames:
         errors.append(f"rendered frames: expected {frames}, got {rendered}")
+    rest_path = Path(record.get("rest_render_path", Path(record["render_dir"]) / "rest.webp"))
+    if not rest_path.is_file():
+        errors.append(f"missing aligned rest render: {rest_path}")
+    else:
+        with Image.open(rest_path) as rest_image:
+            resolution = json.loads(
+                (Path(record["render_dir"]) / "v000.json").read_text()
+            )["resolution"]
+            if rest_image.size != (resolution, resolution):
+                errors.append(
+                    f"rest render size: expected {(resolution, resolution)}, "
+                    f"got {rest_image.size}"
+                )
 
     numeric = [motion[key] for key in motion.files if motion[key].dtype.kind in "fci"]
     if not all(np.isfinite(value).all() for value in numeric):

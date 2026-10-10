@@ -14,6 +14,7 @@ from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.data.dataset import (
     create_temporal_mask_for_window,
     prepend_rest_video_token,
+    rest_cache_path,
 )
 from os.path import join as pjoin
 import BVH
@@ -58,7 +59,10 @@ def main(args = None, cond_dict = None):
         features_dir = os.path.join(args.video_dir, 'features')
         if not os.path.isdir(features_dir):
             raise FileNotFoundError(f"DINOv2 feature directory not found: {features_dir}")
-        n_frames = len([file for file in os.listdir(features_dir) if file.endswith('.npz')])
+        n_frames = len([
+            file for file in os.listdir(features_dir)
+            if re.match(r'timestep_\d+_view_\d+_features\.npz$', file)
+        ])
     if args.max_frames > 0:
         n_frames = min(n_frames, args.max_frames)
     if n_frames == 0:
@@ -191,9 +195,18 @@ def create_condition(object_types, cond_dict, n_frames, temporal_window, joints_
                     "Joint-track cache does not match target skeleton/model: "
                     f"{video_dino.shape}, joints={n_joints}, dim={video_track_dim}"
                 )
+            rest_path = rest_cache_path(track_path)
+            rest_video_dino = (
+                np.asarray(np.load(rest_path, mmap_mode='r')).copy()
+                if rest_path.is_file()
+                else None
+            )
         else:
             features_dir = os.path.join(video_feature_path, 'features')
-            npy_files = [file for file in os.listdir(features_dir) if file.endswith('.npz')]
+            npy_files = [
+                file for file in os.listdir(features_dir)
+                if re.match(r'timestep_\d+_view_\d+_features\.npz$', file)
+            ]
 
             def extract_numbers(filename):
                 match = re.match(r'timestep_(\d+)_view_(\d+)_features\.npz', filename)
@@ -207,8 +220,15 @@ def create_condition(object_types, cond_dict, n_frames, temporal_window, joints_
             for file in npy_files[:n_frames]:
                 video_dino.append(np.load(os.path.join(features_dir, file))["features"][0])
             video_dino = np.stack(video_dino, axis=0)
+            rest_path = os.path.join(features_dir, 'rest_features.npz')
+            if os.path.isfile(rest_path):
+                rest_video_dino = np.load(rest_path)["features"]
+                if rest_video_dino.shape == (1,) + video_dino.shape[1:]:
+                    rest_video_dino = rest_video_dino[0]
+            else:
+                rest_video_dino = None
         # Match [REST, F0, F1, ...] without treating F0 as the rest pose.
-        video_dino = prepend_rest_video_token(video_dino)
+        video_dino = prepend_rest_video_token(video_dino, rest_video_dino)
         batch.append(np.zeros((n_frames, n_joints, feature_len)))
         batch.append(n_frames)
         batch.append(parents)

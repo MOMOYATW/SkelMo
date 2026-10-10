@@ -2,11 +2,13 @@ from types import SimpleNamespace
 import unittest
 
 import numpy as np
+import torch
 
 from data_loaders.static_camera_dataset import (
     _root_aligned_rest,
     _structural_joint_features,
 )
+from data_loaders.tensors import truebones_batch_collate
 from utils.model_util import get_gmdm_args
 
 
@@ -46,6 +48,33 @@ class StaticCameraDatasetTests(unittest.TestCase):
         config = get_gmdm_args(args)
         self.assertEqual(config["feature_len"], 9)
         self.assertEqual(config["root_input_feats"], 9)
+
+    def test_collate_preserves_normalization_statistics(self):
+        frames, joints, features, max_joints = 2, 2, 9, 143
+        mean = np.tile(np.arange(features, dtype=np.float32), (joints, 1))
+        std = np.tile(np.arange(features, dtype=np.float32) + 1, (joints, 1))
+        sample = (
+            np.zeros((frames, joints, features), dtype=np.float32),
+            frames,
+            np.asarray([-1, 0], dtype=np.int64),
+            np.zeros((joints, features), dtype=np.float32),
+            np.zeros((joints, 3), dtype=np.float32),
+            torch.ones((frames + 1, frames + 1), dtype=torch.bool),
+            np.zeros((joints, joints), dtype=np.float32),
+            np.zeros((joints, joints), dtype=np.float32),
+            np.zeros((joints, 256), dtype=np.float32),
+            0,
+            mean,
+            std,
+            np.zeros((frames + 1, 1369, 128), dtype=np.float16),
+            max_joints,
+            "dense_dino",
+        )
+        _, condition = truebones_batch_collate([sample])
+        np.testing.assert_allclose(condition["y"]["mean"][0, :joints], mean)
+        np.testing.assert_allclose(condition["y"]["std"][0, :joints], std)
+        np.testing.assert_allclose(condition["y"]["mean"][0, joints:], 0)
+        np.testing.assert_allclose(condition["y"]["std"][0, joints:], 1)
 
 
 if __name__ == "__main__":

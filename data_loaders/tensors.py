@@ -116,6 +116,8 @@ def truebones_batch_collate(batch):
         crop_start_ind = b[9]
         mean = torch.zeros((max_joints, n_feats))
         std = torch.ones((max_joints, n_feats))
+        mean[:n_joints] = torch.as_tensor(b[10])
+        std[:n_joints] = torch.as_tensor(b[11])
         n_joints = b[0].shape[1]
         temporal_mask = b[5][:max_len + 1, :max_len + 1].clone()
         padded_joints_relations =  create_padded_relation(b[7], max_joints, n_joints)

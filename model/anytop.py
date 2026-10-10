@@ -109,6 +109,7 @@ class SkelMo(nn.Module):
                 joint_ids < y['n_joints'].to(x.device)[:, None, None]
             )
             token_types = torch.ones(video_dino.shape[1], dtype=torch.long, device=x.device)
+            # Slot zero is a learned-type null aligned with numeric REST geometry.
             token_types[0] = 0
             video_dino = video_dino + self.visual_token_type_embedding(token_types)[None, :, None]
             video_dino = video_dino.masked_fill(~valid[..., None], 0)
@@ -134,6 +135,7 @@ class SkelMo(nn.Module):
             video_dino = patch_feats.reshape(B, F, side, side, -1)
             video_dino = self.video_proj(video_dino)
             token_types = torch.ones(F, dtype=torch.long, device=x.device)
+            # Slot zero is a learned-type null aligned with numeric REST geometry.
             token_types[0] = 0
             video_dino = video_dino + self.visual_token_type_embedding(
                 token_types

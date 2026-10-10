@@ -56,7 +56,7 @@ def true_rest_pose(cond_dict, motion_shape):
 
 
 def prepend_rest_video_token(video_features, rest_features=None):
-    """Prepend aligned REST features; use a zero only for legacy datasets."""
+    """Compatibility helper for checkpoints that used a visual REST token."""
     video_features = np.asarray(video_features)
     if video_features.ndim < 2 or len(video_features) == 0:
         raise ValueError(f"Video features must be a non-empty sequence, got {video_features.shape}")
@@ -72,6 +72,16 @@ def prepend_rest_video_token(video_features, rest_features=None):
             )
         rest = rest.astype(video_features.dtype, copy=False)
     return np.concatenate([rest[None], video_features], axis=0)
+
+
+def prepend_null_video_token(video_features):
+    """Align video with the skeletal REST token without using a REST image."""
+    video_features = np.asarray(video_features)
+    if video_features.ndim < 2 or len(video_features) == 0:
+        raise ValueError(
+            f"Video features must be a non-empty sequence, got {video_features.shape}"
+        )
+    return np.concatenate([np.zeros_like(video_features[:1]), video_features], axis=0)
 
 
 def rest_cache_path(video_cache_path):
@@ -268,7 +278,6 @@ class MotionDataset(data.Dataset):
 
         self.motions = []
         self.dino_features = []
-        self.rest_dino_features = []
         self.cond_dict = []
         self.points_features = []
         self.points_xyzs = []
@@ -300,7 +309,6 @@ class MotionDataset(data.Dataset):
             if self.video_feature_mode == "rgb":
                 video_source = [features_dir / file for file in dino_files]
                 video_length = len(video_source)
-                rest_source = find_rest_image(features_dir)
             else:
                 video_source = features_dir / self.video_cache_filename
                 if not video_source.exists():
@@ -313,10 +321,7 @@ class MotionDataset(data.Dataset):
                     raise ValueError(f"Expected [T,J,D] joint tracks in {video_source}")
                 if self.video_feature_mode == "dense_dino" and cached.ndim != 3:
                     raise ValueError(f"Expected [T,N,D] dense DINO tokens in {video_source}")
-                rest_candidate = rest_cache_path(video_source)
-                rest_source = rest_candidate if rest_candidate.is_file() else None
             self.dino_features.append(video_source)
-            self.rest_dino_features.append(rest_source)
 
             assert video_length == len(self.motions[-1]), f"Length mismatch between video features and motion for {npy_file}"
 
@@ -463,30 +468,20 @@ class MotionDataset(data.Dataset):
             print(f"Warning: motion values are too large after normalization for index {idx}. Max: {motion.max()}, Min: {motion.min()}")
 
         video_source = self.dino_features[idx]
-        rest_source = self.rest_dino_features[idx]
         if self.video_feature_mode == "rgb":
             frames = []
             for image_path in video_source[ind: ind + m_length]:
                 with Image.open(image_path) as image:
                     frames.append(self.transform(image.convert('RGB')).numpy())
             video_dino = np.stack(frames, axis=0)
-            if rest_source is not None:
-                with Image.open(rest_source) as image:
-                    rest_video_dino = self.transform(image.convert('RGB')).numpy()
-            else:
-                rest_video_dino = None
         else:
             cached = np.load(video_source, mmap_mode="r")
             video_dino = np.asarray(cached[ind: ind + m_length]).copy()
-            rest_video_dino = (
-                np.asarray(np.load(rest_source, mmap_mode="r")).copy()
-                if rest_source is not None
-                else None
-            )
 
-        # Visual tokens now align exactly with skeletal [REST, F0, F1, ...].
-        # Legacy datasets remain readable through the explicit zero fallback.
-        video_dino = prepend_rest_video_token(video_dino, rest_video_dino)
+        # The skeletal stream is [REST, F0, F1, ...], while the visual stream
+        # is [NULL, F0, F1, ...]. REST geometry remains structural input, but
+        # no rendered REST image or REST DINO feature is consumed.
+        video_dino = prepend_null_video_token(video_dino)
 
         if self.video_feature_mode == "joint_tracks":
             if video_dino.shape[1] != len(parents):

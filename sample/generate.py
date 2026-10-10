@@ -13,8 +13,7 @@ from data_loaders.truebones.truebones_utils.plot_script import plot_general_skel
 from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.data.dataset import (
     create_temporal_mask_for_window,
-    prepend_rest_video_token,
-    rest_cache_path,
+    prepend_null_video_token,
 )
 from os.path import join as pjoin
 import BVH
@@ -195,12 +194,6 @@ def create_condition(object_types, cond_dict, n_frames, temporal_window, joints_
                     "Joint-track cache does not match target skeleton/model: "
                     f"{video_dino.shape}, joints={n_joints}, dim={video_track_dim}"
                 )
-            rest_path = rest_cache_path(track_path)
-            rest_video_dino = (
-                np.asarray(np.load(rest_path, mmap_mode='r')).copy()
-                if rest_path.is_file()
-                else None
-            )
         else:
             features_dir = os.path.join(video_feature_path, 'features')
             npy_files = [
@@ -220,15 +213,8 @@ def create_condition(object_types, cond_dict, n_frames, temporal_window, joints_
             for file in npy_files[:n_frames]:
                 video_dino.append(np.load(os.path.join(features_dir, file))["features"][0])
             video_dino = np.stack(video_dino, axis=0)
-            rest_path = os.path.join(features_dir, 'rest_features.npz')
-            if os.path.isfile(rest_path):
-                rest_video_dino = np.load(rest_path)["features"]
-                if rest_video_dino.shape == (1,) + video_dino.shape[1:]:
-                    rest_video_dino = rest_video_dino[0]
-            else:
-                rest_video_dino = None
-        # Match [REST, F0, F1, ...] without treating F0 as the rest pose.
-        video_dino = prepend_rest_video_token(video_dino, rest_video_dino)
+        # Match skeletal [REST, F0, ...] with visual [NULL, F0, ...].
+        video_dino = prepend_null_video_token(video_dino)
         batch.append(np.zeros((n_frames, n_joints, feature_len)))
         batch.append(n_frames)
         batch.append(parents)

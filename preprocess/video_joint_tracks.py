@@ -21,21 +21,6 @@ from tqdm import tqdm
 DEFAULT_CACHE_NAME = "joint_tracks_dinov2_vitb14_fp16.npy"
 
 
-def rest_cache_path(video_cache_path):
-    path = Path(video_cache_path)
-    return path.with_name(f"rest_{path.name}")
-
-
-def find_rest_image(image_dir):
-    image_dir = Path(image_dir)
-    for directory in (image_dir, image_dir.parent):
-        for name in ("rest.webp", "rest.png", "rest.jpg", "rest.jpeg"):
-            candidate = directory / name
-            if candidate.is_file():
-                return candidate
-    return None
-
-
 def match_dino_patches(patches, joint_features, support, temperature=0.07):
     """Match ``[T,D,H,W]`` patches to ``[J,D]`` queries -> ``[T,J,D+8]``."""
     if patches.ndim != 4 or joint_features.ndim != 2:
@@ -138,24 +123,12 @@ def sequence_dirs(dataset_root):
 
 def process_sequence(model, transform, asset_root, image_dir, args):
     output = image_dir / args.cache_filename
-    rest_image = find_rest_image(image_dir)
-    rest_output = rest_cache_path(output)
-    write_video = True
     if output.exists() and not args.overwrite:
         cached = np.load(output, mmap_mode="r")
         if cached.ndim == 3 and cached.shape[-1] == 776:
-            write_video = False
+            return "skipped"
         else:
             raise ValueError(f"Existing cache has the wrong schema: {output}")
-    if rest_image is not None and rest_output.exists() and not args.overwrite:
-        cached_rest = np.load(rest_output, mmap_mode="r")
-        if cached_rest.ndim != 2 or cached_rest.shape[-1] != 776:
-            raise ValueError(f"Existing REST cache has the wrong schema: {rest_output}")
-        write_rest = False
-    else:
-        write_rest = rest_image is not None
-    if not write_video and not write_rest:
-        return "skipped"
     frames = sorted(
         (path for path in image_dir.glob("*.png") if frame_number(path)[0] != 10**12),
         key=frame_number,
@@ -166,53 +139,33 @@ def process_sequence(model, transform, asset_root, image_dir, args):
     query = torch.from_numpy(query_np).to(args.device)
     support = torch.from_numpy(support_np).to(args.device)
     with torch.inference_mode():
-        if write_video:
-            temporary = output.with_suffix(".tmp.npy")
-            result = np.lib.format.open_memmap(
-                temporary,
-                mode="w+",
-                dtype=np.float16,
-                shape=(len(frames), len(query_np), 776),
-            )
-            for start in range(0, len(frames), args.batch_size):
-                batch_paths = frames[start:start + args.batch_size]
-                tensors = []
-                for path in batch_paths:
-                    with Image.open(path) as image:
-                        tensors.append(transform(image.convert("RGB")))
-                images = torch.stack(tensors).to(args.device, non_blocking=True)
-                with torch.autocast(
-                    device_type=torch.device(args.device).type,
-                    dtype=torch.float16,
-                    enabled=torch.device(args.device).type == "cuda",
-                ):
-                    patches = extract_patch_maps(model, images)
-                tracks = match_dino_patches(patches, query, support, args.temperature)
-                if not torch.isfinite(tracks).all():
-                    raise ValueError(f"Non-finite correspondence track in {image_dir}")
-                result[start:start + len(batch_paths)] = tracks.cpu().numpy().astype(np.float16)
-            result.flush()
-            del result
-            os.replace(temporary, output)
-        if write_rest:
-            with Image.open(rest_image) as image:
-                rest_tensor = transform(image.convert("RGB"))[None].to(
-                    args.device, non_blocking=True
-                )
+        temporary = output.with_suffix(".tmp.npy")
+        result = np.lib.format.open_memmap(
+            temporary,
+            mode="w+",
+            dtype=np.float16,
+            shape=(len(frames), len(query_np), 776),
+        )
+        for start in range(0, len(frames), args.batch_size):
+            batch_paths = frames[start:start + args.batch_size]
+            tensors = []
+            for path in batch_paths:
+                with Image.open(path) as image:
+                    tensors.append(transform(image.convert("RGB")))
+            images = torch.stack(tensors).to(args.device, non_blocking=True)
             with torch.autocast(
                 device_type=torch.device(args.device).type,
                 dtype=torch.float16,
                 enabled=torch.device(args.device).type == "cuda",
             ):
-                rest_patches = extract_patch_maps(model, rest_tensor)
-            rest_tracks = match_dino_patches(
-                rest_patches, query, support, args.temperature
-            )[0]
-            if not torch.isfinite(rest_tracks).all():
-                raise ValueError(f"Non-finite REST correspondence track in {image_dir}")
-            temporary_rest = rest_output.with_suffix(".tmp.npy")
-            np.save(temporary_rest, rest_tracks.cpu().numpy().astype(np.float16))
-            os.replace(temporary_rest, rest_output)
+                patches = extract_patch_maps(model, images)
+            tracks = match_dino_patches(patches, query, support, args.temperature)
+            if not torch.isfinite(tracks).all():
+                raise ValueError(f"Non-finite correspondence track in {image_dir}")
+            result[start:start + len(batch_paths)] = tracks.cpu().numpy().astype(np.float16)
+        result.flush()
+        del result
+        os.replace(temporary, output)
     metadata = {
         "format": "skelmo_joint_tracks_v1",
         "backbone": "vit_base_patch14_dinov2.lvd142m",
@@ -222,8 +175,8 @@ def process_sequence(model, transform, asset_root, image_dir, args):
         "dtype": "float16",
         "temperature": args.temperature,
         "joint_names": list(joint_names),
-        "rest_conditioning": "aligned_render" if rest_image is not None else "legacy_zero",
-        "rest_cache": rest_output.name if rest_image is not None else None,
+        "visual_sequence": "null_then_motion_frames",
+        "rest_cache": None,
     }
     output.with_suffix(".json").write_text(json.dumps(metadata, indent=2) + "\n")
     return "written"

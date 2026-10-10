@@ -6,6 +6,7 @@ import torch
 from data_loaders.truebones.data.dataset import (
     absolute_joint_positions,
     permute_non_root_joints,
+    prepend_null_video_token,
     prepend_rest_video_token,
     prune_leaf_joints,
     subdivide_joint_edge,
@@ -39,9 +40,9 @@ class VideoJointTrackTests(unittest.TestCase):
         np.testing.assert_array_equal(conditioned[0], rest)
         np.testing.assert_array_equal(conditioned[1:], video)
 
-    def test_missing_rest_video_uses_legacy_zero_fallback(self):
+    def test_visual_condition_uses_null_then_motion_frames(self):
         video = np.ones((2, 3, 4), dtype=np.float32)
-        conditioned = prepend_rest_video_token(video)
+        conditioned = prepend_null_video_token(video)
         np.testing.assert_array_equal(conditioned[0], np.zeros_like(video[0]))
         np.testing.assert_array_equal(conditioned[1:], video)
 

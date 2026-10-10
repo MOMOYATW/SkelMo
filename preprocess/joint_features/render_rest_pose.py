@@ -248,7 +248,14 @@ def calibrate_view(
     bounds = (0.0, 0.0, 1.0, 1.0)
     look_at(camera, direction, distance, target)
     for _ in range(iterations):
-        bounds = preview_alpha_bounds()
+        try:
+            bounds = preview_alpha_bounds()
+        except RuntimeError as error:
+            # Very thin characters can disappear when the 512px target is
+            # downsampled to the 96px framing preview.  The geometry-derived
+            # camera is still valid and is safer than rejecting the asset.
+            print(f"WARNING: {error}; using geometry framing for this view")
+            return distance, target, bounds
         u_min, v_min, u_max, v_max = bounds
         center_u = (u_min + u_max) / 2.0
         center_v = (v_min + v_max) / 2.0

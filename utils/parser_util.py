@@ -176,7 +176,7 @@ def add_training_options(parser):
     group.add_argument("--joint_feature_dropout_prob", default=0.15, type=float,
                        help="Per-joint probability of masking rest-pose descriptors.")
     group.add_argument("--video_joint_dropout_prob", default=0.1, type=float,
-                       help="Per-joint probability of masking an entire visual track.")
+                       help="Mask joint tracks, or fixed dense patch regions, for visual occlusion augmentation.")
     group.add_argument("--leaf_prune_prob", default=0.2, type=float,
                        help="Probability of pruning random non-root leaf joints.")
     group.add_argument("--joint_subdivision_prob", default=0.2, type=float,

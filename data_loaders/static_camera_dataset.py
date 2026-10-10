@@ -14,6 +14,7 @@ from data_loaders.truebones.data.dataset import (
     create_temporal_mask_for_window,
     permute_non_root_joints,
     prepend_null_video_token,
+    prepend_rest_video_token,
     prune_leaf_joints,
 )
 from data_loaders.truebones.truebones_utils.motion_process import (
@@ -100,6 +101,24 @@ def _appearance_joint_features(root, record, joint_names):
     return features
 
 
+def _conditioning_pose(motion, rest, mode):
+    """Choose the numeric reference token without changing motion targets."""
+    if mode == "rest":
+        return np.asarray(rest).copy()
+    if mode == "first_frame":
+        return np.asarray(motion[0]).copy()
+    raise ValueError(f"Unsupported reference condition mode: {mode}")
+
+
+def _prepend_conditioning_video_token(video_features, mode):
+    """Align the visual reference token with the selected numeric reference."""
+    if mode == "rest":
+        return prepend_null_video_token(video_features)
+    if mode == "first_frame":
+        return prepend_rest_video_token(video_features, video_features[0])
+    raise ValueError(f"Unsupported reference condition mode: {mode}")
+
+
 class StaticCameraDataset(data.Dataset):
     def __init__(
         self,
@@ -110,6 +129,7 @@ class StaticCameraDataset(data.Dataset):
         video_cache_filename,
         video_feature_mode="dense_dino",
         motion_representation="positions_rot6d",
+        reference_condition_mode="rest",
         joint_permutation_prob=0.0,
         joint_feature_dropout_prob=0.0,
         video_joint_dropout_prob=0.0,
@@ -122,6 +142,7 @@ class StaticCameraDataset(data.Dataset):
         self.video_cache_filename = video_cache_filename
         self.video_feature_mode = video_feature_mode
         self.motion_representation = motion_representation
+        self.reference_condition_mode = reference_condition_mode
         self.joint_permutation_prob = float(joint_permutation_prob)
         self.joint_feature_dropout_prob = float(joint_feature_dropout_prob)
         self.video_joint_dropout_prob = float(video_joint_dropout_prob)
@@ -133,6 +154,10 @@ class StaticCameraDataset(data.Dataset):
             )
         if motion_representation not in {"positions", "positions_rot6d"}:
             raise ValueError(f"Unsupported motion representation: {motion_representation}")
+        if reference_condition_mode not in {"rest", "first_frame"}:
+            raise ValueError(
+                f"Unsupported reference condition mode: {reference_condition_mode}"
+            )
         self.feature_len = 9 if motion_representation == "positions_rot6d" else 3
         pca_path = self.root / "dense_dino" / "pca_128.npz"
         if not pca_path.is_file():
@@ -200,6 +225,7 @@ class StaticCameraDataset(data.Dataset):
             rest = np.concatenate([rest, identity6], axis=-1)
         motion = (motion - self.mean) / self.std
         rest = (rest - self.mean) / self.std
+        reference_pose = _conditioning_pose(motion, rest, self.reference_condition_mode)
         padded_motion = np.zeros(
             (self.max_motion_length, len(parents), self.feature_len), dtype=np.float32
         )
@@ -225,7 +251,9 @@ class StaticCameraDataset(data.Dataset):
                 f"Video cache shape {tracks.shape} does not match "
                 f"T={length}, tokens={expected_middle}"
             )
-        tracks = prepend_null_video_token(tracks)
+        tracks = _prepend_conditioning_video_token(
+            tracks, self.reference_condition_mode
+        )
 
         relations, graph_dist = create_topology_edge_relations(
             parents.tolist(), max_path_len=MAX_PATH_LEN
@@ -250,7 +278,7 @@ class StaticCameraDataset(data.Dataset):
 
         if random.random() < self.leaf_prune_prob:
             joint_arrays = [
-                (motion, 1), (rest, 0), (offsets, 0), (joint_features, 0)
+                (motion, 1), (reference_pose, 0), (offsets, 0), (joint_features, 0)
             ]
             if self.video_feature_mode == "joint_tracks":
                 joint_arrays.append((tracks, 1))
@@ -258,12 +286,12 @@ class StaticCameraDataset(data.Dataset):
                 joint_arrays,
                 parents,
             )
-            motion, rest, offsets, joint_features = arrays[:4]
+            motion, reference_pose, offsets, joint_features = arrays[:4]
             if self.video_feature_mode == "joint_tracks":
                 tracks = arrays[4]
         if random.random() < self.joint_permutation_prob:
             joint_arrays = [
-                (motion, 1), (rest, 0), (offsets, 0), (joint_features, 0)
+                (motion, 1), (reference_pose, 0), (offsets, 0), (joint_features, 0)
             ]
             if self.video_feature_mode == "joint_tracks":
                 joint_arrays.append((tracks, 1))
@@ -273,7 +301,7 @@ class StaticCameraDataset(data.Dataset):
                 relations,
                 graph_dist,
             )
-            motion, rest, offsets, joint_features = arrays[:4]
+            motion, reference_pose, offsets, joint_features = arrays[:4]
             if self.video_feature_mode == "joint_tracks":
                 tracks = arrays[4]
         if self.joint_feature_dropout_prob:
@@ -302,7 +330,7 @@ class StaticCameraDataset(data.Dataset):
             motion,
             length,
             parents,
-            rest,
+            reference_pose,
             offsets,
             self.temporal_mask_template,
             graph_dist,

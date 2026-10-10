@@ -104,6 +104,15 @@ def add_model_options(parser):
         help="Predict XYZ only, or XYZ plus rest-relative global 6D rotations.",
     )
     group.add_argument(
+        "--reference_condition_mode",
+        default="rest",
+        choices=["rest", "first_frame"],
+        help=(
+            "Numeric/visual reference token: aligned rest pose with a null visual "
+            "slot, or the first animated pose with its matching cached video frame."
+        ),
+    )
+    group.add_argument(
         "--video_cache_filename",
         default="joint_tracks_dinov2_vitb14_fp16.npy",
         type=str,

@@ -231,6 +231,7 @@ def main():
         video_cache_filename=args.video_cache_filename,
         video_feature_mode=args.video_feature_mode,
         motion_representation=args.motion_representation,
+        reference_condition_mode=getattr(args, "reference_condition_mode", "rest"),
         joint_permutation_prob=0.0,
         joint_feature_dropout_prob=0.0,
         video_joint_dropout_prob=0.0,

@@ -60,6 +60,7 @@ class SkelMo(nn.Module):
         self.cond_mask_prob = kargs.get('cond_mask_prob', 0.)
         self.value_emb=kargs.get('value_emb', False)
         self.video_feature_mode = kargs.get('video_feature_mode', 'rgb')
+        self.reference_condition_mode = kargs.get('reference_condition_mode', 'rest')
         self.video_track_dim = int(kargs.get('video_track_dim', 776))
         self.video_dense_dim = int(kargs.get('video_dense_dim', 128))
         self.joint_feature_dim = int(kargs.get('joint_feature_dim', 768))
@@ -131,7 +132,7 @@ class SkelMo(nn.Module):
                 joint_ids < y['n_joints'].to(x.device)[:, None, None]
             )
             token_types = torch.ones(video_dino.shape[1], dtype=torch.long, device=x.device)
-            # Slot zero is a learned-type null aligned with numeric REST geometry.
+            # Slot zero is the selected reference condition (REST/null or frame zero).
             token_types[0] = 0
             video_dino = video_dino + self.visual_token_type_embedding(token_types)[None, :, None]
             video_dino = video_dino.masked_fill(~valid[..., None], 0)
@@ -173,7 +174,7 @@ class SkelMo(nn.Module):
                     ~observed_patches.reshape(B, F, side, side)[..., None], 0
                 )
             token_types = torch.ones(F, dtype=torch.long, device=x.device)
-            # Slot zero is a learned-type null aligned with numeric REST geometry.
+            # Slot zero is the selected reference condition (REST/null or frame zero).
             token_types[0] = 0
             video_dino = video_dino + self.visual_token_type_embedding(
                 token_types
@@ -184,10 +185,10 @@ class SkelMo(nn.Module):
             video_dino = video_dino.masked_fill(
                 ~valid_frames[:, :, None, None, None], 0
             )
-            # Slot zero is structural only; no rendered rest image or patch
-            # position should leak into it.
-            video_dino[:, 0] = self.visual_token_type_embedding.weight[0]
-
+            if self.reference_condition_mode != 'first_frame':
+                # Preserve the exact structural/null token behavior of older
+                # checkpoints. Only the first-frame ablation exposes patches.
+                video_dino[:, 0] = self.visual_token_type_embedding.weight[0]
         bs, njoints, nfeats, nframes = x.shape
         timesteps_emb = create_sin_embedding(timesteps.view(1, -1, 1), self.latent_dim)[0]
         x = self.input_process(x, tpos_first_frame, y['joints_names_embs'].to(x.device), y['crop_start_ind'])

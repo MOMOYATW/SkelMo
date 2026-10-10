@@ -31,6 +31,7 @@ def get_gmdm_args(args):
             'cond_mask_prob': args.cond_mask_prob, 'max_joints': max_joints,
             'feature_len':feature_len,  'value_emb': args.value_emb, 'root_input_feats': feature_len,
             'video_feature_mode': args.video_feature_mode,
+            'reference_condition_mode': getattr(args, 'reference_condition_mode', 'rest'),
             'video_track_dim': args.video_track_dim,
             'video_dense_dim': args.video_dense_dim,
             'joint_feature_dim': args.joint_feature_dim}

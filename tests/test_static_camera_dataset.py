@@ -5,6 +5,8 @@ import numpy as np
 import torch
 
 from data_loaders.static_camera_dataset import (
+    _conditioning_pose,
+    _prepend_conditioning_video_token,
     _root_aligned_rest,
     _structural_joint_features,
 )
@@ -30,6 +32,31 @@ class StaticCameraDatasetTests(unittest.TestCase):
         features = _structural_joint_features(rest, parents)
         self.assertEqual(features.shape, (3, 768))
         self.assertTrue(np.isfinite(features).all())
+
+    def test_first_frame_condition_uses_matching_numeric_and_visual_tokens(self):
+        motion = np.arange(3 * 2 * 9, dtype=np.float32).reshape(3, 2, 9)
+        rest = np.full((2, 9), -1, dtype=np.float32)
+        video = np.arange(3 * 4 * 5, dtype=np.float32).reshape(3, 4, 5)
+
+        pose = _conditioning_pose(motion, rest, "first_frame")
+        conditioned_video = _prepend_conditioning_video_token(video, "first_frame")
+
+        np.testing.assert_array_equal(pose, motion[0])
+        np.testing.assert_array_equal(conditioned_video[0], video[0])
+        np.testing.assert_array_equal(conditioned_video[1], video[0])
+        self.assertEqual(conditioned_video.shape, (4, 4, 5))
+
+    def test_rest_condition_keeps_null_visual_token(self):
+        motion = np.ones((3, 2, 9), dtype=np.float32)
+        rest = np.full((2, 9), -1, dtype=np.float32)
+        video = np.ones((3, 4, 5), dtype=np.float32)
+
+        pose = _conditioning_pose(motion, rest, "rest")
+        conditioned_video = _prepend_conditioning_video_token(video, "rest")
+
+        np.testing.assert_array_equal(pose, rest)
+        np.testing.assert_array_equal(conditioned_video[0], 0)
+        np.testing.assert_array_equal(conditioned_video[1:], video)
 
     def test_position_rotation_model_uses_nine_channels(self):
         args = SimpleNamespace(

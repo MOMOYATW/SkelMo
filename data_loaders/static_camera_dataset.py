@@ -280,10 +280,16 @@ class StaticCameraDataset(data.Dataset):
             drop = np.random.random(len(parents)) < self.joint_feature_dropout_prob
             drop[0] = False
             joint_features[drop] = 0
-        if self.video_joint_dropout_prob and self.video_feature_mode == "joint_tracks":
-            drop = np.random.random(len(parents)) < self.video_joint_dropout_prob
-            drop[0] = False
-            tracks[:, drop] = 0
+        if self.video_joint_dropout_prob:
+            if self.video_feature_mode == "joint_tracks":
+                drop = np.random.random(len(parents)) < self.video_joint_dropout_prob
+                drop[0] = False
+                tracks[:, drop] = 0
+            else:
+                # Drop fixed image regions through the whole clip to make
+                # joint-to-image correspondence robust to occlusion.
+                drop = np.random.random(tracks.shape[1]) < self.video_joint_dropout_prob
+                tracks[:, drop] = 0
 
         padded_tracks = np.zeros(
             (self.max_motion_length + 1, expected_middle, tracks.shape[-1]),

@@ -143,6 +143,7 @@ class SkelMo(nn.Module):
                         f"D={self.video_dense_dim}; received {tuple(video_dino.shape)}"
                     )
                 B, F, patch_count, _ = video_dino.shape
+                observed_patches = video_dino.abs().sum(dim=-1) > 0
                 patch_feats = video_dino.float()
             else:
                 if self.visual_model is None:
@@ -167,6 +168,10 @@ class SkelMo(nn.Module):
             video_dino = video_dino + create_2d_sin_embedding(
                 side, side, self.latent_dim, video_dino.device
             )[None, None]
+            if self.video_feature_mode == 'dense_dino':
+                video_dino = video_dino.masked_fill(
+                    ~observed_patches.reshape(B, F, side, side)[..., None], 0
+                )
             token_types = torch.ones(F, dtype=torch.long, device=x.device)
             # Slot zero is a learned-type null aligned with numeric REST geometry.
             token_types[0] = 0

@@ -71,6 +71,28 @@ def add_model_options(parser):
                        help="Number of layers.")
     group.add_argument("--latent_dim", default=128, type=int,
                        help="Transformer/GRU width.")
+    group.add_argument("--heads", default=4, type=int,
+                       help="Number of attention heads.")
+    group.add_argument("--ff_size", default=1024, type=int,
+                       help="Transformer feed-forward width.")
+    group.add_argument(
+        "--video_feature_mode",
+        default="rgb",
+        choices=["rgb", "dense_dino", "joint_tracks"],
+        help=(
+            "Video conditioning representation. 'rgb' runs frozen DINO in the "
+            "training forward pass, 'dense_dino' consumes cached patch tokens, "
+            "and 'joint_tracks' consumes compact per-joint correspondence tracks."
+        ),
+    )
+    group.add_argument("--video_track_dim", default=776, type=int,
+                       help="Feature width of cached joint tracks.")
+    group.add_argument(
+        "--video_cache_filename",
+        default="joint_tracks_dinov2_vitb14_fp16.npy",
+        type=str,
+        help="Filename stored inside every imgs_<sequence> directory.",
+    )
     group.add_argument("--cond_mask_prob", default=.1, type=float,
                        help="The probability of masking the condition during training."
                             " For classifier-free guidance learning.")
@@ -133,6 +155,16 @@ def add_training_options(parser):
                        help="If True, will use EMA model averaging.")
     group.add_argument("--balanced", action='store_true',
                        help="Use balancing sampler for fairness between topologies")
+    group.add_argument("--joint_permutation_prob", default=0.5, type=float,
+                       help="Probability of permuting non-root joint slots.")
+    group.add_argument("--joint_feature_dropout_prob", default=0.15, type=float,
+                       help="Per-joint probability of masking rest-pose descriptors.")
+    group.add_argument("--video_joint_dropout_prob", default=0.1, type=float,
+                       help="Per-joint probability of masking an entire visual track.")
+    group.add_argument("--leaf_prune_prob", default=0.2, type=float,
+                       help="Probability of pruning random non-root leaf joints.")
+    group.add_argument("--joint_subdivision_prob", default=0.2, type=float,
+                       help="Probability of subdividing one random non-root bone.")
 
 def add_sampling_options(parser):
     group = parser.add_argument_group('sampling')
@@ -150,6 +182,12 @@ def add_sampling_options(parser):
                        help="Path to the target skeleton's processed cond.npy file.")
     group.add_argument("--video_dir", required=True, type=str,
                        help="Directory containing a features/ subdirectory with DINOv2 NPZ files.")
+    group.add_argument(
+        "--max_frames",
+        default=0,
+        type=int,
+        help="Maximum frames to sample; 0 uses the complete available sequence.",
+    )
 
 
 def add_generate_options(parser):

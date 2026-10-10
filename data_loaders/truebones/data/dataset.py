@@ -5,9 +5,15 @@ import numpy as np
 import os
 from os.path import join as pjoin
 import random
+import math
 from torch.utils.data._utils.collate import default_collate
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
-from data_loaders.truebones.truebones_utils.motion_process import remove_joints_augmentation, add_joint_augmentation
+from data_loaders.truebones.truebones_utils.motion_process import (
+    remove_joints_augmentation,
+    add_joint_augmentation,
+    create_topology_edge_relations,
+)
+from data_loaders.truebones.truebones_utils.param_utils import MAX_PATH_LEN
 from pathlib import Path
 import re
 from tqdm import tqdm
@@ -77,14 +83,122 @@ def create_temporal_mask_for_window(window, max_len):
         mask[i, max(0, i - margin):min(max_len + 1, i + margin + 2)] = 1
     return mask
 
+def permute_non_root_joints(arrays, parents, relations, graph_dist, rng=np.random):
+    """Apply one consistent slot permutation while keeping the root at index 0."""
+    joint_count = len(parents)
+    if joint_count <= 2:
+        return arrays, np.asarray(parents), relations, graph_dist
+    order = np.concatenate(([0], rng.permutation(np.arange(1, joint_count))))
+    inverse = np.empty(joint_count, dtype=np.int64)
+    inverse[order] = np.arange(joint_count)
+    old_parents = np.asarray(parents)
+    new_parents = old_parents[order].copy()
+    valid = new_parents >= 0
+    new_parents[valid] = inverse[new_parents[valid]]
+    permuted = []
+    for value, axis in arrays:
+        permuted.append(np.take(value, order, axis=axis))
+    return (
+        permuted,
+        new_parents,
+        np.asarray(relations)[np.ix_(order, order)],
+        np.asarray(graph_dist)[np.ix_(order, order)],
+    )
+
+
+def prune_leaf_joints(arrays, parents, rng=np.random, fraction=0.15):
+    """Remove a small random set of leaves and rebuild graph relations."""
+    parents = np.asarray(parents)
+    children = np.bincount(parents[parents >= 0], minlength=len(parents))
+    leaves = np.flatnonzero((children == 0) & (np.arange(len(parents)) != 0))
+    if len(leaves) == 0:
+        return arrays, parents, *create_topology_edge_relations(
+            parents.tolist(), max_path_len=MAX_PATH_LEN
+        )
+    count = min(len(leaves), max(1, int(math.ceil(len(leaves) * fraction))))
+    removed = set(np.asarray(rng.choice(leaves, size=count, replace=False)).tolist())
+    order = np.asarray([joint for joint in range(len(parents)) if joint not in removed])
+    inverse = np.full(len(parents), -1, dtype=np.int64)
+    inverse[order] = np.arange(len(order))
+    new_parents = parents[order].copy()
+    valid = new_parents >= 0
+    new_parents[valid] = inverse[new_parents[valid]]
+    values = [np.take(value, order, axis=axis) for value, axis in arrays]
+    relations, graph_dist = create_topology_edge_relations(
+        new_parents.tolist(), max_path_len=MAX_PATH_LEN
+    )
+    return values, new_parents, relations, graph_dist
+
+
+def subdivide_joint_edge(motion, tpose, offsets, joint_features, video_tracks,
+                         parents, rng=np.random):
+    """Insert one degree-2 joint while preserving endpoint trajectories."""
+    parents = np.asarray(parents).copy()
+    candidates = np.arange(1, len(parents))
+    if len(candidates) == 0:
+        relations, graph_dist = create_topology_edge_relations(
+            parents.tolist(), max_path_len=MAX_PATH_LEN
+        )
+        return (motion, tpose, offsets, joint_features, video_tracks,
+                parents, relations, graph_dist)
+    child = int(rng.choice(candidates))
+    parent = int(parents[child])
+    new_index = len(parents)
+    new_motion = 0.5 * (motion[:, parent] + motion[:, child])
+    new_tpose = 0.5 * (tpose[parent] + tpose[child])
+    new_joint_feature = 0.5 * (joint_features[parent] + joint_features[child])
+    new_video = 0.5 * (video_tracks[:, parent] + video_tracks[:, child])
+    # The last channel records whether a joint has direct skin support.
+    new_video[..., -1] = np.maximum(
+        video_tracks[:, parent, -1], video_tracks[:, child, -1]
+    )
+    old_offset = offsets[child].copy()
+    offsets = offsets.copy()
+    offsets[child] = old_offset * 0.5
+    offsets = np.concatenate([offsets, (old_offset * 0.5)[None]], axis=0)
+    motion = np.concatenate([motion, new_motion[:, None]], axis=1)
+    tpose = np.concatenate([tpose, new_tpose[None]], axis=0)
+    joint_features = np.concatenate([joint_features, new_joint_feature[None]], axis=0)
+    video_tracks = np.concatenate([video_tracks, new_video[:, None]], axis=1)
+    parents[child] = new_index
+    parents = np.concatenate([parents, np.asarray([parent])])
+    relations, graph_dist = create_topology_edge_relations(
+        parents.tolist(), max_path_len=MAX_PATH_LEN
+    )
+    return (motion, tpose, offsets, joint_features, video_tracks,
+            parents, relations, graph_dist)
+
+
 class MotionDataset(data.Dataset):
-    def __init__(self, opt, temporal_window, balanced):
+    def __init__(self, opt, temporal_window, balanced, video_feature_mode="rgb",
+                 video_cache_filename="joint_tracks_dinov2_vitb14_fp16.npy",
+                 joint_permutation_prob=0.0, joint_feature_dropout_prob=0.0,
+                 video_joint_dropout_prob=0.0, leaf_prune_prob=0.0,
+                 joint_subdivision_prob=0.0):
         print("in MotionDataset constructor")
         self.opt = opt
         self.max_length = 20
         self.pointer = 0
         self.max_motion_length = opt.max_motion_length
         self.balanced = balanced
+        self.video_feature_mode = video_feature_mode
+        self.video_cache_filename = video_cache_filename
+        self.joint_permutation_prob = float(joint_permutation_prob)
+        self.joint_feature_dropout_prob = float(joint_feature_dropout_prob)
+        self.video_joint_dropout_prob = float(video_joint_dropout_prob)
+        self.leaf_prune_prob = float(leaf_prune_prob)
+        self.joint_subdivision_prob = float(joint_subdivision_prob)
+        for name, probability in (
+            ("joint_permutation_prob", self.joint_permutation_prob),
+            ("joint_feature_dropout_prob", self.joint_feature_dropout_prob),
+            ("video_joint_dropout_prob", self.video_joint_dropout_prob),
+            ("leaf_prune_prob", self.leaf_prune_prob),
+            ("joint_subdivision_prob", self.joint_subdivision_prob),
+        ):
+            if not 0 <= probability <= 1:
+                raise ValueError(f"{name} must be in [0, 1], got {probability}")
+        if self.video_feature_mode not in {"rgb", "dense_dino", "joint_tracks"}:
+            raise ValueError(f"Unsupported video feature mode: {self.video_feature_mode}")
 
         self.motions = []
         self.dino_features = []
@@ -113,13 +227,24 @@ class MotionDataset(data.Dataset):
 
             dino_files.sort(key=extract_numbers)
 
-            dino_features = []
+            if self.video_feature_mode == "rgb":
+                video_source = [features_dir / file for file in dino_files]
+                video_length = len(video_source)
+            else:
+                video_source = features_dir / self.video_cache_filename
+                if not video_source.exists():
+                    raise FileNotFoundError(
+                        f"Missing {self.video_feature_mode} cache for {npy_file}: {video_source}"
+                    )
+                cached = np.load(video_source, mmap_mode="r")
+                video_length = len(cached)
+                if self.video_feature_mode == "joint_tracks" and cached.ndim != 3:
+                    raise ValueError(f"Expected [T,J,D] joint tracks in {video_source}")
+                if self.video_feature_mode == "dense_dino" and cached.ndim != 3:
+                    raise ValueError(f"Expected [T,N,D] dense DINO tokens in {video_source}")
+            self.dino_features.append(video_source)
 
-            for file in dino_files:
-                dino_features.append(features_dir / file)
-            self.dino_features.append(dino_features)
-
-            assert len(dino_features) == len(self.motions[-1]), f"Length mismatch between dino features and motion for {npy_file}"
+            assert video_length == len(self.motions[-1]), f"Length mismatch between video features and motion for {npy_file}"
 
             cond_dict = np.load(npy_file.parent.parent / 'cond.npy', allow_pickle=True).item()
             cond_dict = cond_dict["cond"]
@@ -221,10 +346,9 @@ class MotionDataset(data.Dataset):
         joint_seeds = list(set(joint_seeds))
 
         joints_names_embs = np.array([
-            points_masks_dict.get(
-                joint_name,
-                points_masks_dict[joint_name.replace('_end_site', '')]
-            )
+            points_masks_dict[joint_name]
+            if joint_name in points_masks_dict
+            else points_masks_dict[joint_name.replace('_end_site', '')]
             for joint_name in cond_dict['joints_names']
         ])
         data = {
@@ -264,29 +388,91 @@ class MotionDataset(data.Dataset):
         if motion.max() > 100 or motion.min() < -100:
             print(f"Warning: motion values are too large after normalization for index {idx}. Max: {motion.max()}, Min: {motion.min()}")
 
-        video_dino_length = len(self.dino_features[idx])
-        dino_features = []
-        for dino_path in self.dino_features[idx][ind: ind + m_length]:
-            img = Image.open(dino_path).convert('RGB')
-            img = self.transform(img)
-            dino_features.append(img.numpy())
-        dino_features = np.stack(dino_features, axis=0)
+        video_source = self.dino_features[idx]
+        if self.video_feature_mode == "rgb":
+            frames = []
+            for image_path in video_source[ind: ind + m_length]:
+                with Image.open(image_path) as image:
+                    frames.append(self.transform(image.convert('RGB')).numpy())
+            video_dino = np.stack(frames, axis=0)
+        else:
+            cached = np.load(video_source, mmap_mode="r")
+            video_dino = np.asarray(cached[ind: ind + m_length]).copy()
 
-        if video_dino_length <= self.max_motion_length:
-            video_dino = np.concatenate([dino_features[0:1], dino_features], axis=0)
-            video_dino = np.concatenate([
-                video_dino,
-                np.zeros((self.max_motion_length - video_dino_length,
-                        video_dino.shape[1],
-                        video_dino.shape[2],
-                        video_dino.shape[3]))
-            ], axis=0)
-        elif video_dino_length > self.max_motion_length:
-            video_dino = np.concatenate([dino_features[0:1], dino_features], axis=0)
+        if self.video_feature_mode == "joint_tracks":
+            if video_dino.shape[1] != len(parents):
+                raise ValueError(
+                    f"Joint-track count {video_dino.shape[1]} does not match skeleton "
+                    f"count {len(parents)} for {video_source}"
+                )
+            if random.random() < self.leaf_prune_prob:
+                values, parents, joints_relations, joints_graph_dist = prune_leaf_joints(
+                    [
+                        (motion, 1),
+                        (tpos_first_frame, 0),
+                        (offsets, 0),
+                        (joints_names_embs, 0),
+                        (video_dino, 1),
+                    ],
+                    parents,
+                )
+                motion, tpos_first_frame, offsets, joints_names_embs, video_dino = values
+            if (
+                random.random() < self.joint_subdivision_prob
+                and len(parents) < self.opt.max_joints
+            ):
+                (
+                    motion,
+                    tpos_first_frame,
+                    offsets,
+                    joints_names_embs,
+                    video_dino,
+                    parents,
+                    joints_relations,
+                    joints_graph_dist,
+                ) = subdivide_joint_edge(
+                    motion,
+                    tpos_first_frame,
+                    offsets,
+                    joints_names_embs,
+                    video_dino,
+                    parents,
+                )
+            if random.random() < self.joint_permutation_prob:
+                values, parents, joints_relations, joints_graph_dist = permute_non_root_joints(
+                    [
+                        (motion, 1),
+                        (tpos_first_frame, 0),
+                        (offsets, 0),
+                        (joints_names_embs, 0),
+                        (video_dino, 1),
+                    ],
+                    parents,
+                    joints_relations,
+                    joints_graph_dist,
+                )
+                motion, tpos_first_frame, offsets, joints_names_embs, video_dino = values
+            if self.joint_feature_dropout_prob:
+                drop = np.random.random(len(parents)) < self.joint_feature_dropout_prob
+                drop[0] = False
+                joints_names_embs = joints_names_embs.copy()
+                joints_names_embs[drop] = 0
+            if self.video_joint_dropout_prob:
+                drop = np.random.random(len(parents)) < self.video_joint_dropout_prob
+                drop[0] = False
+                video_dino[:, drop] = 0
 
-        ind = 0
+        # The skeletal stream has a rest-pose token at t=0. Duplicate the first
+        # observation to align the compact or dense video stream with it.
+        video_dino = np.concatenate([video_dino[:1], video_dino], axis=0)
+        pad_frames = self.max_motion_length + 1 - len(video_dino)
+        if pad_frames > 0:
+            video_dino = np.concatenate(
+                [video_dino, np.zeros((pad_frames,) + video_dino.shape[1:], dtype=video_dino.dtype)],
+                axis=0,
+            )
 
-        return motion, m_length, parents, tpos_first_frame, offsets, self.temporal_mask_template, joints_graph_dist, joints_relations, joints_names_embs, ind, mean, std, video_dino, self.opt.max_joints
+        return motion, m_length, parents, tpos_first_frame, offsets, self.temporal_mask_template, joints_graph_dist, joints_relations, joints_names_embs, ind, mean, std, video_dino, self.opt.max_joints, self.video_feature_mode
 
 class TruebonesSampler(WeightedRandomSampler):
     def __init__(self, data_source):
@@ -311,14 +497,28 @@ class Truebones(data.Dataset):
         opt = get_opt(device, data_root=kwargs.get('data_dir') or None)
         opt.motion_dir = pjoin(abs_base_path, opt.motion_dir)
         opt.data_root = pjoin(abs_base_path, opt.data_root)
-        opt.max_motion_length = min(opt.max_motion_length, kwargs['num_frames'])
+        # num_frames is a crop/window size, not a model-wide 40-frame ceiling.
+        opt.max_motion_length = kwargs['num_frames']
         self.opt = opt
         self.balanced = kwargs['balanced']
         self.objects_subset = kwargs['objects_subset']
         print('Loading Truebones dataset')
 
         self.split_file = pjoin(opt.data_root, f'{split}.txt')
-        self.motion_dataset = MotionDataset(self.opt, temporal_window, self.balanced)
+        self.motion_dataset = MotionDataset(
+            self.opt,
+            temporal_window,
+            self.balanced,
+            video_feature_mode=kwargs.get("video_feature_mode", "rgb"),
+            video_cache_filename=kwargs.get(
+                "video_cache_filename", "joint_tracks_dinov2_vitb14_fp16.npy"
+            ),
+            joint_permutation_prob=kwargs.get("joint_permutation_prob", 0.0),
+            joint_feature_dropout_prob=kwargs.get("joint_feature_dropout_prob", 0.0),
+            video_joint_dropout_prob=kwargs.get("video_joint_dropout_prob", 0.0),
+            leaf_prune_prob=kwargs.get("leaf_prune_prob", 0.0),
+            joint_subdivision_prob=kwargs.get("joint_subdivision_prob", 0.0),
+        )
         assert len(self.motion_dataset) >= 1, 'You loaded an empty dataset, ' \
                                           'it is probably because your data dir has only texts and no motions.\n' \
                                           'To train and evaluate MDM you should get the FULL data as described ' \

@@ -293,10 +293,12 @@ class GraphMotionDecoder(nn.TransformerDecoder):
 
 class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
     def __init__(self, d_model: int, nhead: int, dim_feedforward: int = 2048, dropout: float = 0.1,
-                 activation: Union[str, Callable[[Tensor], Tensor]] = F.relu):
+                 activation: Union[str, Callable[[Tensor], Tensor]] = F.relu,
+                 compact_video: bool = False):
         super().__init__(d_model, nhead, dim_feedforward, dropout, activation)
         self.d_model= d_model
         self.heads = nhead
+        self.compact_video = compact_video
         self.spatial_attn = GraphMultiHeadAttention(d_model = d_model, nheads = nhead, dropout=dropout)
         self.temporal_attn = MultiheadAttention(self.d_model, nhead, dropout=dropout)
         self.embed_timesteps = nn.Linear(d_model, d_model)
@@ -314,8 +316,12 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         self.norm_skeleton = nn.LayerNorm(d_model)
         self.norm_skeleton_2 = nn.LayerNorm(d_model)
 
-        self.dino_temporal_attn = DINOWithTemporalAttention(dim=d_model, num_heads=nhead)
-        self.dino_spatial_attn = SpatialFlashAttention2D(dim=d_model, num_heads=nhead)
+        if compact_video:
+            self.dino_temporal_attn = None
+            self.dino_spatial_attn = None
+        else:
+            self.dino_temporal_attn = DINOWithTemporalAttention(dim=d_model, num_heads=nhead)
+            self.dino_spatial_attn = SpatialFlashAttention2D(dim=d_model, num_heads=nhead)
 
         self.linearup = nn.Linear(d_model, dim_feedforward)
         self.lineardown = nn.Linear(dim_feedforward, d_model)
@@ -446,16 +452,31 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         topo_key_emb, topo_query_emb, topo_value_emb, spatial_mask, tgt_key_padding_mask, y)
         x = self.norm1(x + spatial_attn_output)
         x = self.norm2(x + self._temporal_mha_block_sin_joint(x, temporal_mask, tgt_key_padding_mask))
-        input_video = self.dino_spatial_attn(input_video)
-        input_video = self.dino_temporal_attn(input_video)
-        video_attn_output = self._video_cross_attn_block(
-            x, input_video, tgt_key_padding_mask
-        )
-        x = self.norm_video(x + video_attn_output)
-        skeleton_attn_output = self._reverse_video_cross_attn_block(
-            x, input_video, tgt_key_padding_mask
-        )
-        input_video = self.norm_skeleton(skeleton_attn_output + input_video)
+        if self.compact_video:
+            # Joint tracks are already aligned to skeletal slots, so dense
+            # 1369-patch cross-attention is unnecessary. Keep the conditioning
+            # update symmetric while preserving the [B,F,J,D] cache layout.
+            aligned_video = input_video.permute(1, 0, 2, 3)
+            if aligned_video.shape != x.shape:
+                raise ValueError(
+                    "Compact video and skeleton tokens do not align: "
+                    f"{tuple(aligned_video.shape)} vs {tuple(x.shape)}"
+                )
+            x = self.norm_video(x + self.video_dropout(aligned_video))
+            input_video = self.norm_skeleton(
+                input_video + self.skeleton_dropout(x.permute(1, 0, 2, 3))
+            )
+        else:
+            input_video = self.dino_spatial_attn(input_video)
+            input_video = self.dino_temporal_attn(input_video)
+            video_attn_output = self._video_cross_attn_block(
+                x, input_video, tgt_key_padding_mask
+            )
+            x = self.norm_video(x + video_attn_output)
+            skeleton_attn_output = self._reverse_video_cross_attn_block(
+                x, input_video, tgt_key_padding_mask
+            )
+            input_video = self.norm_skeleton(skeleton_attn_output + input_video)
         dino_attn_output = self._rest_pose_cross_attn_block(
             x, y['joints_names_embs'].to(x.device), None
         )

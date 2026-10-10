@@ -102,7 +102,8 @@ def truebones_collate(batch):
 
 def truebones_batch_collate(batch):
     """Pad motion samples and collate them into model inputs and conditions."""
-    max_joints = batch[0][-1]
+    # Legacy tuples end at max_joints; v2 appends video_feature_mode.
+    max_joints = batch[0][13]
     adapted_batch = []
     for b in batch:
         max_len, n_joints, n_feats = b[0].shape
@@ -119,7 +120,15 @@ def truebones_batch_collate(batch):
         temporal_mask = b[5][:max_len + 1, :max_len + 1].clone()
         padded_joints_relations =  create_padded_relation(b[7], max_joints, n_joints)
         padded_graph_dist =  create_padded_relation(b[6], max_joints, n_joints)
+        video_feature_mode = b[14] if len(b) > 14 else 'rgb'
         video_dino = torch.tensor(b[12])
+        if video_feature_mode == 'joint_tracks':
+            padded_video = torch.zeros(
+                (video_dino.shape[0], max_joints, video_dino.shape[-1]),
+                dtype=video_dino.dtype,
+            )
+            padded_video[:, :n_joints] = video_dino
+            video_dino = padded_video
         item = {
             'inp': motion.permute(1, 2, 0).float(),
             'n_joints': n_joints,
@@ -134,6 +143,7 @@ def truebones_batch_collate(batch):
             'mean': mean,
             'std': std,
             'video_dino': video_dino,
+            'video_feature_mode': video_feature_mode,
         }
         adapted_batch.append(item)
 

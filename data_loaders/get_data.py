@@ -7,7 +7,7 @@ def get_dataset_class(name):
     return Truebones
 
 def get_dataset(num_frames, split='train', temporal_window=31, balanced=False,
-                objects_subset="all", data_dir=""):
+                objects_subset="all", data_dir="", **kwargs):
     dataset = Truebones(
         split=split,
         num_frames=num_frames,
@@ -15,12 +15,13 @@ def get_dataset(num_frames, split='train', temporal_window=31, balanced=False,
         balanced=balanced,
         objects_subset=objects_subset,
         data_dir=data_dir,
+        **kwargs,
     )
     return dataset
 
 
 def get_dataset_loader(batch_size, num_frames, split='train', temporal_window=31,
-                       balanced=True, objects_subset="all", data_dir=""):
+                       balanced=True, objects_subset="all", data_dir="", **kwargs):
     dataset = get_dataset(
         num_frames=num_frames,
         split=split,
@@ -28,6 +29,7 @@ def get_dataset_loader(batch_size, num_frames, split='train', temporal_window=31
         balanced=balanced,
         objects_subset=objects_subset,
         data_dir=data_dir,
+        **kwargs,
     )
     collate = truebones_batch_collate
 

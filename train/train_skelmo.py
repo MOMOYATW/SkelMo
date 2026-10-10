@@ -51,6 +51,13 @@ def main():
         balanced=args.balanced,
         objects_subset=args.objects_subset,
         data_dir=args.data_dir,
+        video_feature_mode=args.video_feature_mode,
+        video_cache_filename=args.video_cache_filename,
+        joint_permutation_prob=args.joint_permutation_prob,
+        joint_feature_dropout_prob=args.joint_feature_dropout_prob,
+        video_joint_dropout_prob=args.video_joint_dropout_prob,
+        leaf_prune_prob=args.leaf_prune_prob,
+        joint_subdivision_prob=args.joint_subdivision_prob,
     )
 
     print("Creating model and diffusion...")

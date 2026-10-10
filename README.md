@@ -123,9 +123,15 @@ Driving-video features are expected under `<video_dir>/features/`:
 
 Each NPZ file must contain a `features` array with shape `[1, 1370, 768]`: one
 CLS token followed by a 37 x 37 DINOv2 ViT-B/14 patch grid. Files are sorted by
-the numeric timestep; only the first 40 frames are used. The current repository
-does not include the raw-video feature extractor, so these features must be
-prepared separately for inference.
+the numeric timestep. There is no longer a hard-coded 40-frame inference cap;
+use `--max_frames` to request an explicit prefix, or leave it at zero to use the
+complete sequence.
+
+New checkpoints can instead use compact joint correspondence tracks. A track
+cache has shape `[frames, joints, 776]` in FP16 and contains a matched DINO
+appearance descriptor plus image-space correspondence statistics. This avoids
+running frozen DINO in every training epoch and avoids the expensive 1369-patch
+attention path.
 
 ## Inference
 
@@ -178,6 +184,42 @@ torchrun --standalone --nproc_per_node=4 -m train.train_skelmo \
   --model_prefix skelmo \
   --overwrite
 ```
+
+For scalable training, first generate compact joint tracks. The command can be
+sharded across GPUs by changing `--shard-index` from 0 to 7:
+
+```bash
+python -m preprocess.video_joint_tracks \
+  --data-dir /path/to/processed_dataset \
+  --device cuda:0 \
+  --num-shards 8 \
+  --shard-index 0
+```
+
+Then train a larger model on longer random windows without invoking DINO in the
+training process:
+
+```bash
+torchrun --standalone --nproc_per_node=8 -m train.train_skelmo \
+  --data_dir /path/to/processed_dataset \
+  --save_dir save/skelmo_joint_tracks_128f \
+  --video_feature_mode joint_tracks \
+  --num_frames 128 \
+  --temporal_window 65 \
+  --latent_dim 384 \
+  --layers 8 \
+  --heads 6 \
+  --ff_size 1536 \
+  --batch_size 2 \
+  --num_steps 80000 \
+  --overwrite
+```
+
+The compact loader applies a consistent non-root joint permutation, leaf
+pruning, degree-2 bone subdivision, and can mask rest-pose descriptors or
+complete visual joint tracks. Control these with `--joint_permutation_prob`,
+`--leaf_prune_prob`, `--joint_subdivision_prob`,
+`--joint_feature_dropout_prob`, and `--video_joint_dropout_prob`.
 
 Alternatively, set `SKELMO_DATASET_DIR` instead of passing `--data_dir`.
 

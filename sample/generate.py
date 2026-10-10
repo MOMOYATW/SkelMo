@@ -41,15 +41,25 @@ def main(args = None, cond_dict = None):
     name = os.path.basename(os.path.dirname(args.model_path))
     niter = os.path.basename(args.model_path).replace('model', '').replace('.pt', '')
     fps = opt.fps
-    features_dir = os.path.join(args.video_dir, 'features')
-    if not os.path.isdir(features_dir):
-        raise FileNotFoundError(f"DINOv2 feature directory not found: {features_dir}")
-    n_frames = min(
-        len([file for file in os.listdir(features_dir) if file.endswith('.npz')]),
-        40,
-    )
+    if args.video_feature_mode == 'joint_tracks':
+        track_path = os.path.join(args.video_dir, args.video_cache_filename)
+        if not os.path.isfile(track_path):
+            raise FileNotFoundError(f"Joint-track cache not found: {track_path}")
+        tracks = np.load(track_path, mmap_mode='r')
+        if tracks.ndim != 3 or tracks.shape[-1] != args.video_track_dim:
+            raise ValueError(
+                f"Expected joint tracks [T,J,{args.video_track_dim}], got {tracks.shape}"
+            )
+        n_frames = len(tracks)
+    else:
+        features_dir = os.path.join(args.video_dir, 'features')
+        if not os.path.isdir(features_dir):
+            raise FileNotFoundError(f"DINOv2 feature directory not found: {features_dir}")
+        n_frames = len([file for file in os.listdir(features_dir) if file.endswith('.npz')])
+    if args.max_frames > 0:
+        n_frames = min(n_frames, args.max_frames)
     if n_frames == 0:
-        raise FileNotFoundError(f"No DINOv2 NPZ features found in: {features_dir}")
+        raise FileNotFoundError(f"No video features found in: {args.video_dir}")
     max_joints = opt.max_joints
     dist_util.setup_dist(args.device)
     object_types = args.object_type
@@ -72,7 +82,19 @@ def main(args = None, cond_dict = None):
     model.to(dist_util.dev())
     model.eval()
     joints_feature_path = Path(args.cond_path).parent.parent / 'joint_averaged_features.npy'
-    _, model_kwargs = create_condition(object_types, cond_dict, n_frames, args.temporal_window, joints_feature_path, max_joints=opt.max_joints, feature_len=opt.feature_len, video_feature_path=args.video_dir)
+    _, model_kwargs = create_condition(
+        object_types,
+        cond_dict,
+        n_frames,
+        args.temporal_window,
+        joints_feature_path,
+        max_joints=opt.max_joints,
+        feature_len=opt.feature_len,
+        video_feature_path=args.video_dir,
+        video_feature_mode=args.video_feature_mode,
+        video_cache_filename=args.video_cache_filename,
+        video_track_dim=args.video_track_dim,
+    )
 
     cond_dict = cond_dict["cond"]
     for rep_i in range(args.num_repetitions):
@@ -121,7 +143,11 @@ def main(args = None, cond_dict = None):
                 )
             print("repetition #" + str(rep_i) + " ,created motion: "+ npy_name)
 
-def create_condition(object_types, cond_dict, n_frames, temporal_window, joints_feature_path, max_joints, feature_len, video_feature_path):
+def create_condition(object_types, cond_dict, n_frames, temporal_window, joints_feature_path,
+                     max_joints, feature_len, video_feature_path,
+                     video_feature_mode='dense_dino',
+                     video_cache_filename='joint_tracks_dinov2_vitb14_fp16.npy',
+                     video_track_dim=776):
     batches = list()
     skeleton_cond = cond_dict["cond"]
     for object_type in object_types:
@@ -154,23 +180,30 @@ def create_condition(object_types, cond_dict, n_frames, temporal_window, joints_
             else joints_features_dict[joint_name.replace('_end_site', '')]
             for joint_name in skeleton_cond['joints_names']
         ])
-        dino_dir = video_feature_path
-        features_dir = os.path.join(dino_dir, 'features')
-        npy_files = [file for file in os.listdir(features_dir) if file.endswith('.npz')]
+        if video_feature_mode == 'joint_tracks':
+            track_path = os.path.join(video_feature_path, video_cache_filename)
+            video_dino = np.asarray(np.load(track_path, mmap_mode='r')[:n_frames]).copy()
+            if video_dino.shape[1] != n_joints or video_dino.shape[-1] != video_track_dim:
+                raise ValueError(
+                    "Joint-track cache does not match target skeleton/model: "
+                    f"{video_dino.shape}, joints={n_joints}, dim={video_track_dim}"
+                )
+        else:
+            features_dir = os.path.join(video_feature_path, 'features')
+            npy_files = [file for file in os.listdir(features_dir) if file.endswith('.npz')]
 
-        def extract_numbers(filename):
-            match = re.match(r'timestep_(\d+)_view_(\d+)_features\.npz', filename)
-            if match:
-                timestep = int(match.group(1))
-                return timestep
-            return 0
+            def extract_numbers(filename):
+                match = re.match(r'timestep_(\d+)_view_(\d+)_features\.npz', filename)
+                if match:
+                    timestep = int(match.group(1))
+                    return timestep
+                return 0
 
-        npy_files.sort(key=extract_numbers)
-
-        video_dino = []
-        for file in npy_files[:n_frames]:
-            video_dino.append(np.load(os.path.join(features_dir, file))["features"][0])
-        video_dino = np.stack(video_dino, axis=0)
+            npy_files.sort(key=extract_numbers)
+            video_dino = []
+            for file in npy_files[:n_frames]:
+                video_dino.append(np.load(os.path.join(features_dir, file))["features"][0])
+            video_dino = np.stack(video_dino, axis=0)
         # Match the rest-pose token prepended to the skeletal sequence.
         video_dino = np.concatenate([video_dino[:1], video_dino], axis=0)
         batch.append(np.zeros((n_frames, n_joints, feature_len)))
@@ -187,6 +220,7 @@ def create_condition(object_types, cond_dict, n_frames, temporal_window, joints_
         batch.append(std)
         batch.append(video_dino[:n_frames + 1])
         batch.append(max_joints)
+        batch.append(video_feature_mode)
         batches.append(batch)
 
     return truebones_batch_collate(batches)

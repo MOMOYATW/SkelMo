@@ -45,6 +45,10 @@ class SkelMo(nn.Module):
         self.cond_mode = kargs.get('cond_mode', 'no_cond')
         self.cond_mask_prob = kargs.get('cond_mask_prob', 0.)
         self.value_emb=kargs.get('value_emb', False)
+        self.video_feature_mode = kargs.get('video_feature_mode', 'rgb')
+        self.video_track_dim = int(kargs.get('video_track_dim', 776))
+        if self.video_feature_mode not in {'rgb', 'dense_dino', 'joint_tracks'}:
+            raise ValueError(f"Unsupported video feature mode: {self.video_feature_mode}")
         self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim)
 
         print("Graph transformer init")
@@ -52,21 +56,31 @@ class SkelMo(nn.Module):
                                                             nhead=self.num_heads,
                                                             dim_feedforward=self.ff_size,
                                                             dropout=self.dropout,
-                                                            activation=self.activation)
+                                                            activation=self.activation,
+                                                            compact_video=self.video_feature_mode == 'joint_tracks')
         self.seqTransDecoder = GraphMotionDecoder(seqTransDecoderLayer,
                                                         num_layers=self.num_layers, value_emb=self.value_emb)
 
 
         self.output_process = OutputProcess(self.feature_len, self.root_input_feats, self.max_joints, self.latent_dim)
 
-        self.video_proj = nn.Linear(768, self.latent_dim)
-
-        self.visual_model = timm.create_model("vit_base_patch14_dinov2.lvd142m", pretrained=True, num_classes=0)
-
-        # DINOv2 supplies frozen visual features throughout training.
-        self.visual_model.eval()
-        for param in self.visual_model.parameters():
-            param.requires_grad = False
+        if self.video_feature_mode == 'joint_tracks':
+            self.video_proj = nn.Sequential(
+                nn.LayerNorm(self.video_track_dim),
+                nn.Linear(self.video_track_dim, self.latent_dim),
+            )
+            self.visual_model = None
+        else:
+            self.video_proj = nn.Linear(768, self.latent_dim)
+            self.visual_model = None
+            if self.video_feature_mode == 'rgb':
+                self.visual_model = timm.create_model(
+                    "vit_base_patch14_dinov2.lvd142m", pretrained=True, num_classes=0
+                )
+                # DINOv2 supplies frozen visual features throughout training.
+                self.visual_model.eval()
+                for param in self.visual_model.parameters():
+                    param.requires_grad = False
 
     def forward(self, x, timesteps, get_layer_activation=-1, y=None, inference=None):
         """Denoise ``x`` with shape ``[batch, joints, features, frames]``."""
@@ -76,20 +90,42 @@ class SkelMo(nn.Module):
         tpos_first_frame = y['tpos_first_frame'].to(x.device).unsqueeze(0)
         video_dino = y['video_dino'].to(x.device)
 
-        if inference is None:
-            # Precomputed tokens are 4D; raw training images are 5D.
-            inference = video_dino.ndim == 4
-
-        if inference:
-            B, F, token_count, channels = video_dino.shape
-            features = video_dino.reshape(B * F, token_count, channels)
+        if self.video_feature_mode == 'joint_tracks':
+            if video_dino.ndim != 4 or video_dino.shape[-1] != self.video_track_dim:
+                raise ValueError(
+                    "joint_tracks expects video features [B,F,J,D] with "
+                    f"D={self.video_track_dim}; received {tuple(video_dino.shape)}"
+                )
+            video_dino = self.video_proj(video_dino.float())
+            frame_ids = torch.arange(video_dino.shape[1], device=x.device)[None, :, None]
+            joint_ids = torch.arange(video_dino.shape[2], device=x.device)[None, None, :]
+            valid = (
+                frame_ids < (y['lengths'].to(x.device)[:, None, None] + 1)
+            ) & (
+                joint_ids < y['n_joints'].to(x.device)[:, None, None]
+            )
+            video_dino = video_dino.masked_fill(~valid[..., None], 0)
         else:
-            B, F, C, H, W = video_dino.shape
-            features = self.visual_model.forward_features(video_dino.reshape(-1, C, H, W).float())
+            if inference is None:
+                inference = self.video_feature_mode == 'dense_dino' or video_dino.ndim == 4
+            if inference:
+                B, F, token_count, channels = video_dino.shape
+                features = video_dino.reshape(B * F, token_count, channels)
+            else:
+                if self.visual_model is None:
+                    raise RuntimeError("Raw RGB input requested without a visual backbone.")
+                B, F, C, H, W = video_dino.shape
+                features = self.visual_model.forward_features(
+                    video_dino.reshape(-1, C, H, W).float()
+                )
 
-        patch_feats = features[:, 1:, :]
-        video_dino = patch_feats.reshape(B, F, 37, 37, -1)
-        video_dino = self.video_proj(video_dino)
+            patch_feats = features[:, 1:, :]
+            patch_count = patch_feats.shape[1]
+            side = int(patch_count ** 0.5)
+            if side * side != patch_count:
+                raise ValueError(f"DINO patch count is not square: {patch_count}")
+            video_dino = patch_feats.reshape(B, F, side, side, -1)
+            video_dino = self.video_proj(video_dino)
 
         bs, njoints, nfeats, nframes = x.shape
         timesteps_emb = create_sin_embedding(timesteps.view(1, -1, 1), self.latent_dim)[0]
@@ -113,11 +149,13 @@ class SkelMo(nn.Module):
 
     def _apply(self, fn):
         super()._apply(fn)
+        return self
 
 
     def train(self, mode=True):
         super().train(mode)
-        self.visual_model.eval()
+        if self.visual_model is not None:
+            self.visual_model.eval()
         return self
 
 

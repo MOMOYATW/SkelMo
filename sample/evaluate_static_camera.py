@@ -102,14 +102,18 @@ def compute_metrics(predicted, target, parents):
         target[:, child, :3] - target[:, parent, :3], axis=-1
     )
     bone_error = np.abs(pred_lengths - true_lengths)
-    angle_error = rotation_error_degrees(predicted, target)
-    return {
+    metrics = {
         "mpjpe_cm": float(position_error.mean() * 100.0),
         "root_error_cm": float(root_error.mean() * 100.0),
         "bone_length_error_cm": float(bone_error.mean() * 100.0),
-        "rotation_error_deg": float(angle_error.mean()),
-        "rotation_error_median_deg": float(np.median(angle_error)),
     }
+    if predicted.shape[-1] >= 9 and target.shape[-1] >= 9:
+        angle_error = rotation_error_degrees(predicted, target)
+        metrics.update(
+            rotation_error_deg=float(angle_error.mean()),
+            rotation_error_median_deg=float(np.median(angle_error)),
+        )
+    return metrics
 
 
 def transform_points(matrix, points):
@@ -197,6 +201,12 @@ def build_index(output, checkpoint, split, rows):
     cards = []
     for row in rows:
         metrics = row["metrics"]
+        rotation_metric = ""
+        if "rotation_error_deg" in metrics:
+            rotation_metric = (
+                f"<dt>Rotation error</dt><dd>{metrics['rotation_error_deg']:.1f}° mean / "
+                f"{metrics['rotation_error_median_deg']:.1f}° median</dd>"
+            )
         cards.append(
             f"""<article><h2>{html.escape(row['clip_id'])}</h2>
             <p>{row['joints']} joints · {row['frames']} frames · yaw {row['yaw']:+.1f}° · seed {row['seed']}</p>
@@ -204,7 +214,7 @@ def build_index(output, checkpoint, split, rows):
             <dl><dt>MPJPE</dt><dd>{metrics['mpjpe_cm']:.2f} cm</dd>
             <dt>Root error</dt><dd>{metrics['root_error_cm']:.2f} cm</dd>
             <dt>Bone-length error</dt><dd>{metrics['bone_length_error_cm']:.2f} cm</dd>
-            <dt>Rotation error</dt><dd>{metrics['rotation_error_deg']:.1f}° mean / {metrics['rotation_error_median_deg']:.1f}° median</dd></dl></article>"""
+            {rotation_metric}</dl></article>"""
         )
     document = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
     <title>SkelMo {html.escape(split)} evaluation</title><style>

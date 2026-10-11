@@ -201,6 +201,12 @@ def add_training_options(parser):
                        help="If positive, train on a deterministic topology-diverse subset.")
     group.add_argument("--balanced", action='store_true',
                        help="Use balancing sampler for fairness between topologies")
+    group.add_argument("--balance_power", default=0.5, type=float,
+                       help=("Inverse topology-bin frequency exponent: 0 disables "
+                             "reweighting and 1 gives occupied bins equal mass."))
+    group.add_argument("--schedule_sampler", default="uniform",
+                       choices=["uniform", "loss-second-moment"],
+                       help="Diffusion timestep sampling strategy.")
     group.add_argument("--joint_permutation_prob", default=0.5, type=float,
                        help="Probability of permuting non-root joint slots.")
     group.add_argument("--joint_feature_dropout_prob", default=0.15, type=float,

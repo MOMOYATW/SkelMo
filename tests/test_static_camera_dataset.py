@@ -10,12 +10,37 @@ from data_loaders.static_camera_dataset import (
     _position_target,
     _root_aligned_rest,
     _structural_joint_features,
+    topology_balancing_weights,
 )
 from data_loaders.tensors import truebones_batch_collate
+from model.anytop import classifier_free_condition_mask
 from utils.model_util import get_gmdm_args
 
 
 class StaticCameraDatasetTests(unittest.TestCase):
+    def test_classifier_free_mask_drops_complete_samples(self):
+        condition = torch.ones((32, 3, 4, 5))
+        torch.manual_seed(7)
+        masked = classifier_free_condition_mask(condition, 0.5, training=True)
+        per_sample = masked.flatten(1).sum(1)
+        self.assertTrue(torch.all((per_sample == 0) | (per_sample == 60)))
+        self.assertTrue(torch.any(per_sample == 0))
+        self.assertTrue(torch.any(per_sample == 60))
+        self.assertIs(
+            classifier_free_condition_mask(condition, 0.5, training=False),
+            condition,
+        )
+
+    def test_full_topology_balancing_equalizes_bin_mass(self):
+        records = [
+            {"joint_count": 4},
+            {"joint_count": 8},
+            {"joint_count": 12},
+            {"joint_count": 120},
+        ]
+        weights = topology_balancing_weights(records, power=1.0)
+        self.assertAlmostEqual(float(weights[:3].sum()), float(weights[3]), places=6)
+
     def test_root_alignment_matches_first_pose_and_uniform_bone_scale(self):
         parents = np.asarray([-1, 0, 1])
         rest = np.asarray([[10, 0, 0], [10, 2, 0], [10, 4, 0]], dtype=np.float32)

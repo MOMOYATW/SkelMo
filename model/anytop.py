@@ -5,6 +5,19 @@ from model.motion_transformer import GraphMotionDecoderLayer, GraphMotionDecoder
 import timm
 
 
+def classifier_free_condition_mask(video_condition, probability, training):
+    """Drop the complete video condition independently for each sample."""
+    if not training or probability <= 0.0:
+        return video_condition
+    if probability >= 1.0:
+        return torch.zeros_like(video_condition)
+    keep = torch.rand(
+        video_condition.shape[0], device=video_condition.device
+    ) >= probability
+    keep = keep.reshape(video_condition.shape[0], *([1] * (video_condition.ndim - 1)))
+    return video_condition * keep.to(video_condition.dtype)
+
+
 def create_sin_embedding(positions: torch.Tensor, dim: int, max_period: float = 10000,
                          dtype: torch.dtype = torch.float32) -> torch.Tensor:
     """Create sinusoidal positional embedding, with shape `[B, T, C]`.
@@ -116,6 +129,9 @@ class SkelMo(nn.Module):
         temp_mask = y['mask'].to(x.device)
         tpos_first_frame = y['tpos_first_frame'].to(x.device).unsqueeze(0)
         video_dino = y['video_dino'].to(x.device)
+        video_dino = classifier_free_condition_mask(
+            video_dino, self.cond_mask_prob, self.training
+        )
 
         if self.video_feature_mode == 'joint_tracks':
             if video_dino.ndim != 4 or video_dino.shape[-1] != self.video_track_dim:

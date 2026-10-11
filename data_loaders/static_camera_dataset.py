@@ -23,6 +23,35 @@ from data_loaders.truebones.truebones_utils.motion_process import (
 from data_loaders.truebones.truebones_utils.param_utils import MAX_PATH_LEN
 
 
+TOPOLOGY_JOINT_BINS = (0, 16, 24, 32, 48, 64, 96, 144)
+
+
+def _joint_count_bin(joint_count):
+    for index, (low, high) in enumerate(
+        zip(TOPOLOGY_JOINT_BINS[:-1], TOPOLOGY_JOINT_BINS[1:])
+    ):
+        if low < int(joint_count) <= high:
+            return index
+    return len(TOPOLOGY_JOINT_BINS) - 1
+
+
+def topology_balancing_weights(records, power=0.5):
+    """Return per-record weights using inverse topology-bin frequency.
+
+    ``power=0`` is ordinary uniform sampling and ``power=1`` gives every
+    occupied joint-count bin equal expected mass.  The default square-root
+    correction improves rare-topology coverage without repeatedly showing the
+    97--143-joint tail as aggressively as full inverse-frequency balancing.
+    """
+    power = float(power)
+    if not 0.0 <= power <= 1.0:
+        raise ValueError(f"balance_power must be in [0, 1], got {power}")
+    bins = np.asarray([_joint_count_bin(row["joint_count"]) for row in records])
+    counts = np.bincount(bins, minlength=len(TOPOLOGY_JOINT_BINS))
+    weights = np.asarray([counts[index] ** (-power) for index in bins], dtype=np.float64)
+    return weights / weights.mean()
+
+
 def _root_aligned_rest(rest, first_pose, parents):
     """Translate and uniformly scale numeric REST geometry to motion frame zero."""
     rest = np.asarray(rest, dtype=np.float64)
@@ -143,6 +172,8 @@ class StaticCameraDataset(data.Dataset):
         reference_condition_mode="rest",
         position_target_mode="absolute",
         max_records=0,
+        balanced=False,
+        balance_power=0.5,
         joint_permutation_prob=0.0,
         joint_feature_dropout_prob=0.0,
         video_joint_dropout_prob=0.0,
@@ -161,6 +192,15 @@ class StaticCameraDataset(data.Dataset):
         self.joint_feature_dropout_prob = float(joint_feature_dropout_prob)
         self.video_joint_dropout_prob = float(video_joint_dropout_prob)
         self.leaf_prune_prob = float(leaf_prune_prob)
+        if self.video_feature_mode == "joint_tracks":
+            self.cache_root = self.root / "tracks"
+        elif self.video_feature_mode == "dense_dino":
+            self.cache_root = self.root / "dense_dino"
+        else:
+            raise ValueError(
+                "StaticCameraDataset expects cached dense_dino or joint_tracks, "
+                f"got {self.video_feature_mode!r}"
+            )
         if joint_subdivision_prob:
             raise ValueError(
                 "Joint subdivision is disabled for global 6D rotation targets; "
@@ -200,7 +240,16 @@ class StaticCameraDataset(data.Dataset):
         records = []
         for path in sorted((self.root / "records").glob("*.json")):
             record = json.loads(path.read_text())
-            if record.get("split") == split:
+            if record.get("split") != split:
+                continue
+            asset = Path(record["asset_path"]).stem.split("_", 1)[0]
+            feature_root = self.root / "rest_joint_features" / asset
+            required = (
+                self.cache_root / f"{record['clip_id']}.{self.video_cache_filename}",
+                feature_root / "joint_averaged_features.npy",
+                feature_root / "joint_max_weight_features.npy",
+            )
+            if all(path.is_file() for path in required):
                 records.append(record)
         if not records:
             raise ValueError(f"No {split!r} records under {self.root}")
@@ -209,6 +258,9 @@ class StaticCameraDataset(data.Dataset):
             indices = np.linspace(0, len(records) - 1, int(max_records), dtype=np.int64)
             records = [records[index] for index in indices]
         self.records = records
+        self.sampling_weights = (
+            topology_balancing_weights(records, balance_power) if balanced else None
+        )
         self.temporal_mask_template = create_temporal_mask_for_window(
             temporal_window, self.max_motion_length
         )
@@ -264,16 +316,7 @@ class StaticCameraDataset(data.Dataset):
         padded_motion[:length] = motion
         motion = padded_motion
 
-        if self.video_feature_mode == "joint_tracks":
-            cache_root = self.root / "tracks"
-        elif self.video_feature_mode == "dense_dino":
-            cache_root = self.root / "dense_dino"
-        else:
-            raise ValueError(
-                "StaticCameraDataset expects cached dense_dino or joint_tracks, "
-                f"got {self.video_feature_mode!r}"
-            )
-        track_path = cache_root / f"{clip_id}.{self.video_cache_filename}"
+        track_path = self.cache_root / f"{clip_id}.{self.video_cache_filename}"
         if not track_path.is_file():
             raise FileNotFoundError(f"Missing video feature cache: {track_path}")
         tracks = np.asarray(np.load(track_path, mmap_mode="r")[start:start + length]).copy()

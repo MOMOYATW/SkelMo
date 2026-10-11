@@ -100,7 +100,7 @@ class TrainLoop:
             # being specified at the command line.
 
 
-        self.schedule_sampler_type = 'uniform'
+        self.schedule_sampler_type = getattr(args, 'schedule_sampler', 'uniform')
         self.schedule_sampler = create_named_schedule_sampler(self.schedule_sampler_type, diffusion)
 
         self.eval_wrapper, self.eval_data, self.eval_gt_data = None, None, None

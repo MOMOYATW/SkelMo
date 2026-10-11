@@ -446,7 +446,11 @@ class GaussianDiffusion:
                 model_output_cond = model(x, self._scale_timesteps(t), **model_kwargs)
 
             model_kwargs_uncond = deepcopy(model_kwargs)
-            model_kwargs_uncond["y"]["video_dino"] = th.zeros_like(model_kwargs_uncond["y"]["video_dino"])
+            uncond_video = model_kwargs_uncond["y"]["video_dino"].clone()
+            # Keep the structural first-frame token in both branches. CFG should
+            # isolate motion evidence rather than amplify correspondence cues.
+            uncond_video[:, 1:] = 0
+            model_kwargs_uncond["y"]["video_dino"] = uncond_video
             if get_layer_activation > -1 and get_layer_activation < model.model.num_layers :
                 model_output_uncond, _ = model(x, self._scale_timesteps(t), get_layer_activation=get_layer_activation, **model_kwargs_uncond)
             else:

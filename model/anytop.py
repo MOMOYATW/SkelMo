@@ -5,17 +5,45 @@ from model.motion_transformer import GraphMotionDecoderLayer, GraphMotionDecoder
 import timm
 
 
-def classifier_free_condition_mask(video_condition, probability, training):
-    """Drop the complete video condition independently for each sample."""
-    if not training or probability <= 0.0:
+def classifier_free_condition_mask(
+    video_condition,
+    probability,
+    training,
+    preserve_prefix_tokens=1,
+    force_drop=None,
+):
+    """Drop motion observations while retaining structural reference tokens."""
+    if force_drop is None:
+        if not training or probability <= 0.0:
+            return video_condition
+        if probability >= 1.0:
+            drop = torch.ones(
+                video_condition.shape[0], dtype=torch.bool, device=video_condition.device
+            )
+        else:
+            drop = torch.rand(
+                video_condition.shape[0], device=video_condition.device
+            ) < probability
+    else:
+        drop = torch.as_tensor(
+            force_drop, dtype=torch.bool, device=video_condition.device
+        ).reshape(-1)
+        if drop.numel() == 1:
+            drop = drop.expand(video_condition.shape[0])
+        if drop.numel() != video_condition.shape[0]:
+            raise ValueError(
+                "force_drop must contain one value per batch item; "
+                f"received {drop.numel()} for batch {video_condition.shape[0]}"
+            )
+    if not drop.any():
         return video_condition
-    if probability >= 1.0:
-        return torch.zeros_like(video_condition)
-    keep = torch.rand(
-        video_condition.shape[0], device=video_condition.device
-    ) >= probability
-    keep = keep.reshape(video_condition.shape[0], *([1] * (video_condition.ndim - 1)))
-    return video_condition * keep.to(video_condition.dtype)
+    keep = (~drop).reshape(
+        video_condition.shape[0], *([1] * (video_condition.ndim - 1))
+    )
+    masked = video_condition.clone()
+    prefix = min(int(preserve_prefix_tokens), video_condition.shape[1])
+    masked[:, prefix:] = masked[:, prefix:] * keep.to(video_condition.dtype)
+    return masked
 
 
 def create_sin_embedding(positions: torch.Tensor, dim: int, max_period: float = 10000,
@@ -130,7 +158,11 @@ class SkelMo(nn.Module):
         tpos_first_frame = y['tpos_first_frame'].to(x.device).unsqueeze(0)
         video_dino = y['video_dino'].to(x.device)
         video_dino = classifier_free_condition_mask(
-            video_dino, self.cond_mask_prob, self.training
+            video_dino,
+            self.cond_mask_prob,
+            self.training,
+            preserve_prefix_tokens=1,
+            force_drop=y.get('video_condition_drop_mask'),
         )
 
         if self.video_feature_mode == 'joint_tracks':

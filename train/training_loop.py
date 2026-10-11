@@ -1,6 +1,7 @@
 import functools
 import os
 import re
+from contextlib import nullcontext
 from os.path import join as pjoin
 from typing import Optional
 import blobfile as bf
@@ -102,6 +103,11 @@ class TrainLoop:
 
         self.schedule_sampler_type = getattr(args, 'schedule_sampler', 'uniform')
         self.schedule_sampler = create_named_schedule_sampler(self.schedule_sampler_type, diffusion)
+        self.cfg_uncond_loss_weight = float(
+            getattr(args, 'cfg_uncond_loss_weight', 0.0)
+        )
+        if self.cfg_uncond_loss_weight < 0:
+            raise ValueError("cfg_uncond_loss_weight must be non-negative")
 
         self.eval_wrapper, self.eval_data, self.eval_gt_data = None, None, None
 
@@ -285,34 +291,71 @@ class TrainLoop:
             micro_cond = cond
             last_batch = (i + self.microbatch) >= batch.shape[0]
             t, weights = self.schedule_sampler.sample(micro.shape[0], dist_util.dev())
+            paired_cfg = self.cfg_uncond_loss_weight > 0
+            shared_noise = torch.randn_like(micro) if paired_cfg else None
 
-            compute_losses = functools.partial(
-                self.diffusion.training_losses,
-                self.ddp_model,
-                micro,  # [bs, ch, image_size, image_size]
-                t,  # [bs](int) sampled timesteps
-                model_kwargs=micro_cond
-            )
+            def compute_branch(force_drop, multiplier, synchronize):
+                branch_cond = micro_cond
+                if force_drop is not None:
+                    branch_cond = {'y': dict(micro_cond['y'])}
+                    branch_cond['y']['video_condition_drop_mask'] = torch.full(
+                        (micro.shape[0],),
+                        force_drop,
+                        dtype=torch.bool,
+                        device=micro.device,
+                    )
+                compute_losses = functools.partial(
+                    self.diffusion.training_losses,
+                    self.ddp_model,
+                    micro,
+                    t,
+                    model_kwargs=branch_cond,
+                    noise=shared_noise,
+                )
+                context = (
+                    self.ddp_model.no_sync()
+                    if self.use_ddp and not synchronize
+                    else nullcontext()
+                )
+                with context:
+                    branch_losses = compute_losses()
+                    branch_loss = (branch_losses["loss"] * weights).mean()
+                    branch_loss = (
+                        branch_loss * multiplier / self.gradient_accumulation_steps
+                    )
+                    self.mp_trainer.backward(branch_loss)
+                return branch_losses
 
-            if self.use_ddp and (is_accumulating or not last_batch):
-                with self.ddp_model.no_sync():
-                    losses = compute_losses()
+            if paired_cfg:
+                conditional_losses = compute_branch(False, 1.0, False)
+                unconditional_losses = compute_branch(
+                    True,
+                    self.cfg_uncond_loss_weight,
+                    not is_accumulating and last_batch,
+                )
+                losses = {
+                    key: value + self.cfg_uncond_loss_weight * unconditional_losses[key]
+                    for key, value in conditional_losses.items()
+                    if key in unconditional_losses
+                }
+                losses["conditional_loss"] = conditional_losses["loss"]
+                losses["unconditional_loss"] = unconditional_losses["loss"]
             else:
-                losses = compute_losses()
+                losses = compute_branch(
+                    None,
+                    1.0,
+                    not is_accumulating and last_batch,
+                )
 
             if isinstance(self.schedule_sampler, LossAwareSampler):
                 self.schedule_sampler.update_with_local_losses(
                     t, losses["loss"].detach()
                 )
 
-            loss = (losses["loss"] * weights).mean()
-            loss = loss / self.gradient_accumulation_steps
-
             if not is_accumulating:
                 log_loss_dict(
                     self.diffusion, t, {k: v * weights for k, v in losses.items()}
                 )
-            self.mp_trainer.backward(loss)
 
 
     def _anneal_lr(self):

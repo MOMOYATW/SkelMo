@@ -130,6 +130,16 @@ def add_model_options(parser):
     group.add_argument("--cond_mask_prob", default=.1, type=float,
                        help="The probability of masking the condition during training."
                             " For classifier-free guidance learning.")
+    group.add_argument(
+        "--cfg_uncond_loss_weight",
+        default=0.0,
+        type=float,
+        help=(
+            "If positive, train an additional skeleton/first-frame conditioned "
+            "motion-prior branch on every batch with this loss weight. This "
+            "replaces sparse random condition dropout for CFG experiments."
+        ),
+    )
     group.add_argument("--lambda_fs", default=0.0, type=float, help="Foot contact loss.")
     group.add_argument("--lambda_geo", default=0.0, type=float, help="Foot contact loss.")
     group.add_argument("--lambda_root", default=0.0, type=float,

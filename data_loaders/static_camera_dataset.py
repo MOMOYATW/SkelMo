@@ -110,6 +110,17 @@ def _conditioning_pose(motion, rest, mode):
     raise ValueError(f"Unsupported reference condition mode: {mode}")
 
 
+def _position_target(positions, std, mode):
+    """Encode XYZ targets while keeping the first-frame condition absolute."""
+    positions = np.asarray(positions)
+    std = np.asarray(std)
+    if mode == "absolute":
+        raise ValueError("absolute targets require the dataset mean")
+    if mode == "first_frame_delta":
+        return (positions - positions[:1]) / std
+    raise ValueError(f"Unsupported position target mode: {mode}")
+
+
 def _prepend_conditioning_video_token(video_features, mode):
     """Align the visual reference token with the selected numeric reference."""
     if mode == "rest":
@@ -130,6 +141,8 @@ class StaticCameraDataset(data.Dataset):
         video_feature_mode="dense_dino",
         motion_representation="positions_rot6d",
         reference_condition_mode="rest",
+        position_target_mode="absolute",
+        max_records=0,
         joint_permutation_prob=0.0,
         joint_feature_dropout_prob=0.0,
         video_joint_dropout_prob=0.0,
@@ -143,6 +156,7 @@ class StaticCameraDataset(data.Dataset):
         self.video_feature_mode = video_feature_mode
         self.motion_representation = motion_representation
         self.reference_condition_mode = reference_condition_mode
+        self.position_target_mode = position_target_mode
         self.joint_permutation_prob = float(joint_permutation_prob)
         self.joint_feature_dropout_prob = float(joint_feature_dropout_prob)
         self.video_joint_dropout_prob = float(video_joint_dropout_prob)
@@ -157,6 +171,14 @@ class StaticCameraDataset(data.Dataset):
         if reference_condition_mode not in {"rest", "first_frame"}:
             raise ValueError(
                 f"Unsupported reference condition mode: {reference_condition_mode}"
+            )
+        if position_target_mode not in {"absolute", "first_frame_delta"}:
+            raise ValueError(f"Unsupported position target mode: {position_target_mode}")
+        if position_target_mode == "first_frame_delta" and (
+            motion_representation != "positions" or reference_condition_mode != "first_frame"
+        ):
+            raise ValueError(
+                "first_frame_delta requires XYZ-only motion and first-frame conditioning"
             )
         self.feature_len = 9 if motion_representation == "positions_rot6d" else 3
         pca_path = self.root / "dense_dino" / "pca_128.npz"
@@ -182,6 +204,10 @@ class StaticCameraDataset(data.Dataset):
                 records.append(record)
         if not records:
             raise ValueError(f"No {split!r} records under {self.root}")
+        if max_records and len(records) > int(max_records):
+            records.sort(key=lambda record: (int(record["joint_count"]), record["clip_id"]))
+            indices = np.linspace(0, len(records) - 1, int(max_records), dtype=np.int64)
+            records = [records[index] for index in indices]
         self.records = records
         self.temporal_mask_template = create_temporal_mask_for_window(
             temporal_window, self.max_motion_length
@@ -223,9 +249,15 @@ class StaticCameraDataset(data.Dataset):
                 (len(parents), 1),
             )
             rest = np.concatenate([rest, identity6], axis=-1)
-        motion = (motion - self.mean) / self.std
+        absolute_motion = (motion - self.mean) / self.std
         rest = (rest - self.mean) / self.std
-        reference_pose = _conditioning_pose(motion, rest, self.reference_condition_mode)
+        reference_pose = _conditioning_pose(
+            absolute_motion, rest, self.reference_condition_mode
+        )
+        if self.position_target_mode == "first_frame_delta":
+            motion = _position_target(motion, self.std, self.position_target_mode)
+        else:
+            motion = absolute_motion
         padded_motion = np.zeros(
             (self.max_motion_length, len(parents), self.feature_len), dtype=np.float32
         )

@@ -181,7 +181,12 @@ class GaussianDiffusion:
         loss_type,
         rescale_timesteps=False,
         lambda_fs=0.,
-        lambda_geo=0.
+        lambda_geo=0.,
+        lambda_root=0.,
+        lambda_vel=0.,
+        lambda_bone=0.,
+        lambda_first=0.,
+        position_target_mode="absolute",
     ):
         self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type
@@ -189,6 +194,11 @@ class GaussianDiffusion:
         self.rescale_timesteps = rescale_timesteps
         self.lambda_fs = lambda_fs
         self.lambda_geo = lambda_geo
+        self.lambda_root = lambda_root
+        self.lambda_vel = lambda_vel
+        self.lambda_bone = lambda_bone
+        self.lambda_first = lambda_first
+        self.position_target_mode = position_target_mode
 
         # Use float64 for accuracy.
         betas = np.array(betas, dtype=np.float64)
@@ -1739,6 +1749,59 @@ class GaussianDiffusion:
             terms["l_simple"] = self.temporal_spatial_masked_l2(target, model_output, mask, joints_mask, lengths, actual_joints)
             terms["loss"] = torch.zeros_like(terms["l_simple"])
             terms["loss"] = terms["loss"] + terms["l_simple"]
+
+            if self.lambda_root > 0.:
+                terms["root_loss"] = self.masked_l2(
+                    target[:, :1], model_output[:, :1], mask
+                )
+                terms["loss"] = terms["loss"] + self.lambda_root * terms["root_loss"]
+            if self.lambda_vel > 0.:
+                terms["velocity_loss"] = self.velocity_loss_with_tail_mask(
+                    target, model_output, mask, joints_mask, lengths, actual_joints
+                )
+                terms["loss"] = terms["loss"] + self.lambda_vel * terms["velocity_loss"]
+            if self.lambda_first > 0.:
+                first_error = self.l2_loss(target[..., 0], model_output[..., 0])
+                valid_joints = joints_mask[:, 0, 0].float().unsqueeze(-1)
+                terms["first_frame_loss"] = sum_flat(first_error * valid_joints) / (
+                    actual_joints * target.size(2)
+                )
+                terms["loss"] = terms["loss"] + self.lambda_first * terms["first_frame_loss"]
+            if self.lambda_bone > 0.:
+                pred_positions = model_output[:, :, :3].permute(0, 3, 1, 2)
+                true_positions = target[:, :, :3].permute(0, 3, 1, 2)
+                if self.position_target_mode == "first_frame_delta":
+                    reference = tpos_first_frame[:, None, :, :3]
+                    pred_positions = pred_positions + reference
+                    true_positions = true_positions + reference
+                position_std = std[:, :, :3].permute(0, 3, 1, 2)
+                pred_positions = pred_positions * position_std
+                true_positions = true_positions * position_std
+                bone_losses = []
+                for batch_index, parents in enumerate(model_kwargs['y']['parents']):
+                    parents = th.as_tensor(parents, device=model_output.device).long()
+                    joint_count = int(actual_joints[batch_index])
+                    child = th.arange(joint_count, device=model_output.device)
+                    valid = parents[:joint_count] >= 0
+                    child = child[valid]
+                    parent = parents[:joint_count][valid]
+                    frame_count = int(lengths[batch_index])
+                    pred_bones = (
+                        pred_positions[batch_index, :frame_count, child]
+                        - pred_positions[batch_index, :frame_count, parent]
+                    )
+                    true_bones = (
+                        true_positions[batch_index, :frame_count, child]
+                        - true_positions[batch_index, :frame_count, parent]
+                    )
+                    scale = std[batch_index, :joint_count, :3].mean().clamp_min(1e-5)
+                    length_error = (
+                        th.linalg.vector_norm(pred_bones, dim=-1)
+                        - th.linalg.vector_norm(true_bones, dim=-1)
+                    ) / scale
+                    bone_losses.append((length_error ** 2).mean())
+                terms["bone_loss"] = th.stack(bone_losses)
+                terms["loss"] = terms["loss"] + self.lambda_bone * terms["bone_loss"]
 
             if self.lambda_geo > 0.:
                 terms["geodesic_loss"] = self.geodesic_loss(target, model_output, mask, joints_mask, lengths, actual_joints)

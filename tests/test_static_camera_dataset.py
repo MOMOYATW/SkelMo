@@ -7,6 +7,7 @@ import torch
 from data_loaders.static_camera_dataset import (
     _conditioning_pose,
     _prepend_conditioning_video_token,
+    _position_target,
     _root_aligned_rest,
     _structural_joint_features,
 )
@@ -57,6 +58,16 @@ class StaticCameraDatasetTests(unittest.TestCase):
         np.testing.assert_array_equal(pose, rest)
         np.testing.assert_array_equal(conditioned_video[0], 0)
         np.testing.assert_array_equal(conditioned_video[1:], video)
+
+    def test_first_frame_delta_target_is_zero_at_frame_zero(self):
+        positions = np.asarray(
+            [[[1, 2, 3], [4, 5, 6]], [[2, 4, 6], [3, 7, 8]]],
+            dtype=np.float32,
+        )
+        std = np.asarray([2, 4, 5], dtype=np.float32)
+        target = _position_target(positions, std, "first_frame_delta")
+        np.testing.assert_array_equal(target[0], 0)
+        np.testing.assert_allclose(target[1], [[0.5, 0.5, 0.6], [-0.5, 0.5, 0.4]])
 
     def test_position_rotation_model_uses_nine_channels(self):
         args = SimpleNamespace(

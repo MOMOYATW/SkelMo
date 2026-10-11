@@ -113,6 +113,15 @@ def add_model_options(parser):
         ),
     )
     group.add_argument(
+        "--position_target_mode",
+        default="absolute",
+        choices=["absolute", "first_frame_delta"],
+        help=(
+            "Represent XYZ targets in absolute gravity-camera coordinates, or "
+            "as displacement from the conditioned first frame."
+        ),
+    )
+    group.add_argument(
         "--video_cache_filename",
         default="joint_tracks_dinov2_vitb14_fp16.npy",
         type=str,
@@ -123,6 +132,14 @@ def add_model_options(parser):
                             " For classifier-free guidance learning.")
     group.add_argument("--lambda_fs", default=0.0, type=float, help="Foot contact loss.")
     group.add_argument("--lambda_geo", default=0.0, type=float, help="Foot contact loss.")
+    group.add_argument("--lambda_root", default=0.0, type=float,
+                       help="Weight for the dedicated root-trajectory loss.")
+    group.add_argument("--lambda_vel", default=0.0, type=float,
+                       help="Weight for joint velocity consistency.")
+    group.add_argument("--lambda_bone", default=0.0, type=float,
+                       help="Weight for parent-child bone-length consistency.")
+    group.add_argument("--lambda_first", default=0.0, type=float,
+                       help="Weight for first-frame reconstruction consistency.")
     group.add_argument("--temporal_window", default=31, type=int,
                        help="temporal window size")
     group.add_argument("--value_emb", action='store_true',
@@ -178,6 +195,10 @@ def add_training_options(parser):
                        help="Number of repetitions, per sample (text prompt/action)")
     group.add_argument("--use_ema", action='store_true',
                        help="If True, will use EMA model averaging.")
+    group.add_argument("--ema_rate", default=0.999, type=float,
+                       help="Parameter decay used by EMA model averaging.")
+    group.add_argument("--max_train_clips", default=0, type=int,
+                       help="If positive, train on a deterministic topology-diverse subset.")
     group.add_argument("--balanced", action='store_true',
                        help="Use balancing sampler for fairness between topologies")
     group.add_argument("--joint_permutation_prob", default=0.5, type=float,

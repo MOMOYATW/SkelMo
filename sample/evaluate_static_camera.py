@@ -81,6 +81,19 @@ def denormalize(array, mean, std):
     return array * std[None] + mean[None]
 
 
+def decode_positions(array, mean, std, reference, target_mode):
+    if target_mode == "first_frame_delta":
+        anchor = reference[..., :3] * std[..., :3] + mean[..., :3]
+        return array[..., :3] * std[None, ..., :3] + anchor[None]
+    return denormalize(array, mean, std)
+
+
+def zero_first_frame(sample):
+    sample = sample.clone()
+    sample[..., 0] = 0
+    return sample
+
+
 def rotation_error_degrees(predicted, target):
     pred = rotation_6d_to_matrix_safe(torch.from_numpy(predicted[..., 3:9]).float())
     truth = rotation_6d_to_matrix_safe(torch.from_numpy(target[..., 3:9]).float())
@@ -242,6 +255,7 @@ def main():
         video_feature_mode=args.video_feature_mode,
         motion_representation=args.motion_representation,
         reference_condition_mode=getattr(args, "reference_condition_mode", "rest"),
+        position_target_mode=getattr(args, "position_target_mode", "absolute"),
         joint_permutation_prob=0.0,
         joint_feature_dropout_prob=0.0,
         video_joint_dropout_prob=0.0,
@@ -255,6 +269,8 @@ def main():
         state = torch.load(cli.checkpoint, map_location="cpu", weights_only=True)
     except TypeError:
         state = torch.load(cli.checkpoint, map_location="cpu")
+    if isinstance(state, dict) and "model_avg" in state:
+        state = state["model_avg"]
     load_model(model, state)
     model.to(device).eval()
     rows = []
@@ -279,13 +295,20 @@ def main():
                 device=device,
                 progress=True,
                 guidance_scale=cli.guidance_scale,
+                denoised_fn=(
+                    zero_first_frame
+                    if getattr(args, "position_target_mode", "absolute") == "first_frame_delta"
+                    else None
+                ),
             )
         pred_norm = sampled[0, :joints, :, :length].permute(2, 0, 1).cpu().numpy()
         true_norm = motion[0, :joints, :, :length].permute(2, 0, 1).numpy()
         mean = condition["y"]["mean"][0, :joints].numpy()
         std = condition["y"]["std"][0, :joints].numpy()
-        predicted = denormalize(pred_norm, mean, std)
-        target = denormalize(true_norm, mean, std)
+        reference = condition["y"]["tpos_first_frame"][0, :joints].numpy()
+        target_mode = getattr(args, "position_target_mode", "absolute")
+        predicted = decode_positions(pred_norm, mean, std, reference, target_mode)
+        target = decode_positions(true_norm, mean, std, reference, target_mode)
         parents = np.asarray(item[2], dtype=np.int64)
         metrics = compute_metrics(predicted, target, parents)
         clip_output = cli.output / record["clip_id"]

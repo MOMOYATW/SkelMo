@@ -55,6 +55,8 @@ def main():
         video_cache_filename=args.video_cache_filename,
         motion_representation=args.motion_representation,
         reference_condition_mode=args.reference_condition_mode,
+        position_target_mode=args.position_target_mode,
+        max_records=args.max_train_clips,
         joint_permutation_prob=args.joint_permutation_prob,
         joint_feature_dropout_prob=args.joint_feature_dropout_prob,
         video_joint_dropout_prob=args.video_joint_dropout_prob,

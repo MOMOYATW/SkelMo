@@ -12,6 +12,7 @@ from diffusion.fp16_util import MixedPrecisionTrainer
 from diffusion.resample import LossAwareSampler
 from tqdm import tqdm
 from diffusion.resample import create_named_schedule_sampler
+from diffusion.nn import update_ema
 from sample.generate import main as generate
 import copy
 from utils.model_util import load_model
@@ -55,6 +56,10 @@ class TrainLoop:
         self.sync_cuda = torch.cuda.is_available()
         self.save_dir = args.save_dir
         self.overwrite = args.overwrite
+        if self.args.use_ema:
+            self.model_avg = copy.deepcopy(self.model).eval()
+            for parameter in self.model_avg.parameters():
+                parameter.requires_grad = False
         self._load_and_sync_parameters()
         self.device = torch.device("cpu")
         if torch.cuda.is_available() and dist_util.dev() != 'cpu':
@@ -258,7 +263,13 @@ class TrainLoop:
         self.accum_iter += 1
 
         if not is_accumulating:
-            self.mp_trainer.optimize(self.opt, self.lr_scheduler)
+            took_step = self.mp_trainer.optimize(self.opt, self.lr_scheduler)
+            if took_step is not False and self.args.use_ema:
+                update_ema(
+                    self.model_avg.parameters(),
+                    self.model.parameters(),
+                    rate=self.args.ema_rate,
+                )
             self._anneal_lr()
             self.log_step()
             self.accum_iter = 0

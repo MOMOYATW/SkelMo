@@ -58,6 +58,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--no-save-view-features", action="store_true")
     parser.add_argument(
+        "--no-save-vertex-features",
+        action="store_true",
+        help="Keep only pooled joint descriptors, omitting the large per-vertex archive.",
+    )
+    parser.add_argument(
         "--save-view-features-for",
         "--view-feature-animal",
         dest="view_feature_animal",
@@ -336,6 +341,7 @@ def process_animal(
     background: float,
     output_dtype,
     save_view_features: bool,
+    save_vertex_features: bool,
     fill_uncovered: bool,
     expected_feature_dim: int,
 ) -> dict:
@@ -414,31 +420,32 @@ def process_animal(
             model=np.asarray(model_name),
         )
 
-    np.savez_compressed(
-        output_dir / "features.npz",
-        vertex_features=vertex_features.astype(output_dtype),
-        joint_features=joint_features.astype(output_dtype),
-        joint_features_filled=joint_features_filled.astype(output_dtype),
-        vertex_view_count=geometry["vertex_visible"].sum(axis=0).astype(np.uint8),
-        vertex_direct_weight=direct_weight.astype(np.float32),
-        vertex_direct_mask=covered,
-        vertex_projection_fallback_mask=projection_fallback,
-        vertex_fill_source=fill_sources,
-        joint_skin_weight_sum=joint_weight_sum,
-        joint_has_skin_support=joint_weight_sum > 0,
-        joint_fill_source=joint_fill_source,
-        joint_dominant_vertex_count=dominant_counts,
-        vertices=geometry["vertices"],
-        mesh_ids=geometry["mesh_ids"],
-        mesh_names=geometry["mesh_names"],
-        joint_names=geometry["joint_names"],
-        joint_parents=geometry["joint_parents"],
-        joint_positions=geometry["joint_positions"],
-        skin_joint_indices=geometry["skin_joint_indices"],
-        skin_weights=geometry["skin_weights"],
-        model=np.asarray(model_name),
-        feature_dim=np.asarray(vertex_features.shape[1], dtype=np.int32),
-    )
+    if save_vertex_features:
+        np.savez_compressed(
+            output_dir / "features.npz",
+            vertex_features=vertex_features.astype(output_dtype),
+            joint_features=joint_features.astype(output_dtype),
+            joint_features_filled=joint_features_filled.astype(output_dtype),
+            vertex_view_count=geometry["vertex_visible"].sum(axis=0).astype(np.uint8),
+            vertex_direct_weight=direct_weight.astype(np.float32),
+            vertex_direct_mask=covered,
+            vertex_projection_fallback_mask=projection_fallback,
+            vertex_fill_source=fill_sources,
+            joint_skin_weight_sum=joint_weight_sum,
+            joint_has_skin_support=joint_weight_sum > 0,
+            joint_fill_source=joint_fill_source,
+            joint_dominant_vertex_count=dominant_counts,
+            vertices=geometry["vertices"],
+            mesh_ids=geometry["mesh_ids"],
+            mesh_names=geometry["mesh_names"],
+            joint_names=geometry["joint_names"],
+            joint_parents=geometry["joint_parents"],
+            joint_positions=geometry["joint_positions"],
+            skin_joint_indices=geometry["skin_joint_indices"],
+            skin_weights=geometry["skin_weights"],
+            model=np.asarray(model_name),
+            feature_dim=np.asarray(vertex_features.shape[1], dtype=np.int32),
+        )
 
     unresolved = (~resolved) & (~resolved[fill_sources])
     result = {
@@ -457,7 +464,7 @@ def process_animal(
         "joints_filled_from_nearest_supported": int((joint_weight_sum <= 0).sum()),
         "joint_averaged_features": str(output_dir / "joint_averaged_features.npy"),
         "joint_max_weight_features": str(output_dir / "joint_max_weight_features.npy"),
-        "features": str(output_dir / "features.npz"),
+        "features": str(output_dir / "features.npz") if save_vertex_features else None,
         "view_features": str(output_dir / "view_features.npz") if save_view_features else None,
     }
     (output_dir / "feature_metadata.json").write_text(
@@ -502,8 +509,16 @@ def main() -> None:
         "errors": [],
     }
     for index, animal in enumerate(animals, 1):
-        final_path = output_root / animal / "features.npz"
-        if final_path.is_file() and not args.overwrite:
+        feature_dir = output_root / animal
+        final_paths = (
+            [
+                feature_dir / "joint_averaged_features.npy",
+                feature_dir / "joint_max_weight_features.npy",
+            ]
+            if args.no_save_vertex_features
+            else [feature_dir / "features.npz"]
+        )
+        if all(path.is_file() for path in final_paths) and not args.overwrite:
             print(f"[{index}/{len(animals)}] skip {animal}")
             metadata_path = output_root / animal / "feature_metadata.json"
             if metadata_path.is_file():
@@ -525,6 +540,7 @@ def main() -> None:
                 args.background,
                 output_dtype,
                 (not args.no_save_view_features) or animal in view_feature_animals,
+                not args.no_save_vertex_features,
                 not args.no_fill_uncovered,
                 args.expected_feature_dim,
             )

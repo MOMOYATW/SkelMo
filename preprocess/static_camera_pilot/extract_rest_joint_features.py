@@ -93,7 +93,8 @@ def main() -> None:
             "--output-root", str(feature_root), "--family", "dinov2",
             "--model", "dinov2_vitb14", "--image-size", "518",
             "--device", args.device, "--background", "0.5", "--dtype", "float16",
-            "--expected-feature-dim", "768", "--no-save-view-features", *asset_args,
+            "--expected-feature-dim", "768", "--no-save-view-features",
+            "--no-save-vertex-features", *asset_args,
         ]
         if args.overwrite:
             extract_command.append("--overwrite")

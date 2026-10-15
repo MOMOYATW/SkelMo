@@ -1,6 +1,6 @@
 # Rest-pose joint features
 
-This pipeline is only for the optional rest-pose appearance checkpoint. The main checkpoint does not need it.
+This pipeline is only for the optional rest-pose appearance checkpoint. The main checkpoint instead samples first-frame PCA-DINO descriptors at the projected joint pixels; it uses neither of the `.npy` files below for training or inference.
 
 It requires a rigged GLB with mesh, armature, and skinning weights; Blender 4.x; and the Python environment in `environment.yaml`. From the repository root:
 

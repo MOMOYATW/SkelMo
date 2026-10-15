@@ -1,113 +1,31 @@
-# Static-camera pilot
+# Static-camera preprocessing
 
-For checkpoint inference on a new animated GLB, use the self-contained
-`render_checkpoint_input.py` entry point and the
-[checkpoint inference guide](../../docs/CHECKPOINT_INFERENCE.md). It renders
-the video and exports the aligned first-frame skeleton/projection in one run.
-The historical bulk training-data builder described below still uses UniMate
-for its asset import and action export stages; it is not required for the
-checkpoint inference command. The primary released checkpoint samples joint
-appearance from the first video frame. The rest-pose appearance descriptors
-described below are only needed for the optional rest-pose variant.
+For checkpoint inference from a new animated GLB, use the self-contained `render_checkpoint_input.py` command in the [inference guide](../../docs/CHECKPOINT_INFERENCE.md). The bulk dataset builder below is for training-data preparation and uses a separate UniMate checkout; it is not needed for checkpoint inference.
 
-This pilot deliberately uses one static camera per clip. Its yaw is sampled
-deterministically and uniformly over 360 degrees from the clip id and camera
-seed, while elevation remains zero. Moving cameras are deferred until rendered
-backgrounds provide enough ego-motion evidence.
+## Training-data pipeline
 
-The source is the local Objaverse-XL Rigged Animated collection. Selection is
-one motion per asset, round-robin balanced by raw joint-count bins, so 1,024
-clips also means 1,024 distinct rigs.
+1. Select rigged animated assets with `select_manifest.py`.
+2. Render each clip and export its rig, motion, camera, and projected joints with `build_dataset.py` (run in a Blender-enabled Python environment with UniMate available).
+3. Fit a shared PCA128 basis and extract dense video features with `extract_dense_dino.py`.
+4. Check completed records with `validate_dataset.py`; inspect projections with `make_gallery.py` when needed.
+
+Example commands from the repository root:
 
 ```bash
 python -m preprocess.static_camera_pilot.select_manifest \
-  --dataset-root /home/ytao/Experiment/UniMate/dataset/Objaverse-XL-Rigged-Animated \
-  --output /home/ytao/Datasets/skelmo_static_pilot_v2_random_yaw/selection.jsonl
-```
+  --dataset-root /path/to/rigged_assets \
+  --output /path/to/selection.jsonl
 
-The initial render contract is 512x512, 30 fps, at most 128 frames, transparent
-WebP frames plus an H.264 inspection video. Every clip also has a separate
-`rest.webp`, rendered after the action with the exact same fixed camera and
-action-derived scene normalization. REST is deliberately not inserted into the
-MP4 or frame directory, so video and motion label lengths remain identical.
-Every clip stores the fixed camera intrinsics/extrinsics and both normalized
-world and gravity-camera targets.
+python -m preprocess.static_camera_pilot.build_dataset \
+  --selection /path/to/selection.jsonl \
+  --dataset-root /path/to/rigged_assets \
+  --unimate-root /path/to/UniMate \
+  --output /path/to/dataset
 
-Build a smoke set with UniMate's Blender-enabled Python:
-
-```bash
-CUDA_VISIBLE_DEVICES=7 /home/ytao/miniconda3/envs/unimate/bin/python \
-  -m preprocess.static_camera_pilot.build_dataset \
-  --selection /home/ytao/Datasets/skelmo_static_pilot_v2_random_yaw/selection.jsonl \
-  --dataset-root /home/ytao/Experiment/UniMate/dataset/Objaverse-XL-Rigged-Animated \
-  --unimate-root /home/ytao/Experiment/UniMate \
-  --output /home/ytao/Datasets/skelmo_static_pilot_v2_random_yaw/smoke \
-  --limit 1 --resolution 256 --max-frames 32 --samples 16
-```
-
-The primary rotation target is the rest-relative global skinning deformation
-expressed in the gravity-aligned camera frame. Both its full 3x3 matrix and an
-explicit column-layout 6D representation are retained during the pilot. This
-avoids silently inheriting the row/column ambiguity of older 6D utilities and
-lets us audit twist before choosing the final compact representation.
-
-The skeletal model sequence is `[REST_GEOMETRY, F0, F1, ...]`. REST_GEOMETRY
-comes from the numeric rig structure in the same gravity-camera coordinate
-system as the motion. The visual stream is `[NULL, video_F0, video_F1, ...]`:
-no rendered REST image is encoded or passed to the model, and frame zero is
-not duplicated. Existing `rest.webp` files are inspection artifacts only.
-Absolute camera-space root placement is preserved.
-
-Each joint also receives an offline appearance descriptor that is independent
-of the motion video. `extract_rest_joint_features` renders the animation-free
-mesh from six axis-aligned and eight diagonal views, samples DINOv2 features
-back onto visible vertices, and pools them to joints with skinning weights.
-At load time the 768D appearance descriptor is projected through the same PCA
-basis as the video patches and concatenated with a 128D numeric topology
-descriptor. The 14 rest renders are preprocessing artifacts, never video
-frames.
-
-The deployable visual condition is a cached dense DINO grid rather than a
-ground-truth joint track. DINOv2-B/14 produces 37x37x768 tokens per frame; a
-shared 128D PCA basis preserves the spatial grid while reducing this pilot to
-about 31 GiB. Fit the basis once, then extract restartable shards:
-
-```bash
 python -m preprocess.static_camera_pilot.extract_dense_dino fit-pca \
-  --root /path/to/full --components 128
+  --root /path/to/dataset --components 128
 python -m preprocess.static_camera_pilot.extract_dense_dino extract \
-  --root /path/to/full --components 128 --num-shards 4 --shard-index 0
+  --root /path/to/dataset --components 128
 ```
 
-The model uses rest appearance+topology as joint queries over these dense
-patches. No ground-truth 2D joint positions are required at inference time.
-
-`rigs/*.npz` stays in unnormalized Y-up source coordinates. Per-clip render
-normalization and the fixed camera live in `motions/*.npz`; therefore adding a
-second motion for the same rig cannot overwrite its canonical rig geometry.
-
-Pixel-aligned joint positions and global rotations are read from Blender's
-evaluated pose matrices, including the armature object's scale. The portable
-UniMate export-space local transforms are retained under explicit `*_export_*`
-keys, but are not used as video-space position targets because many GLBs carry
-non-unit object scale.
-
-Validate every completed record before training:
-
-```bash
-/home/ytao/miniconda3/envs/anytop/bin/python \
-  -m preprocess.static_camera_pilot.validate_dataset \
-  --root /home/ytao/Datasets/skelmo_static_pilot_v2_random_yaw/smoke --expected 8
-```
-
-For direct pixel/label inspection, `render_overlay` draws the projected bones
-over any chosen WebP frame.
-
-Generate and serve an inspection gallery containing REST, motion video, and
-projected-label overlays:
-
-```bash
-python -m preprocess.static_camera_pilot.make_gallery --root /path/to/smoke
-python -m preprocess.static_camera_pilot.serve_gallery \
-  --root /path/to/smoke --port 8766
-```
+Each clip uses one fixed camera. Its rendered frames, frame-zero skeleton, camera metadata, and 2D projections must share the same scene normalization and joint order. A separate rest image may be saved for inspection, but is not inserted into the motion video. The released main checkpoint conditions its joints on the first video frame; 14-view rest-pose appearance is only used by the [optional variant](../joint_features/README.md).

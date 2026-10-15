@@ -1,5 +1,15 @@
 # Static-camera pilot
 
+For checkpoint inference on a new animated GLB, use the self-contained
+`render_checkpoint_input.py` entry point and the
+[checkpoint inference guide](../../docs/CHECKPOINT_INFERENCE.md). It renders
+the video and exports the aligned first-frame skeleton/projection in one run.
+The historical bulk training-data builder described below still uses UniMate
+for its asset import and action export stages; it is not required for the
+checkpoint inference command. The primary released checkpoint samples joint
+appearance from the first video frame. The rest-pose appearance descriptors
+described below are only needed for the optional rest-pose variant.
+
 This pilot deliberately uses one static camera per clip. Its yaw is sampled
 deterministically and uniformly over 360 degrees from the clip id and camera
 seed, while elevation remains zero. Moving cameras are deferred until rendered

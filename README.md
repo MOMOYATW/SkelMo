@@ -50,10 +50,12 @@ Download the [checkpoint bundle](https://drive.google.com/file/d/1ZJ4BKAkn4ms21t
 The 32-frame checkpoint uses calibrated first-frame joint projections
 and a PCA128 dense-DINO video grid. For a new rig or driving video, inference
 requires the aligned first-frame 3D skeleton, calibrated camera, and uncropped
-frames; these are not inferred automatically. See the
+frames. The included GLB renderer prepares all three from a rigged animated
+asset; an arbitrary video still needs separate camera and first-pose
+calibration. See the
 [checkpoint inference guide](docs/CHECKPOINT_INFERENCE.md) for the
-four-file checkpoint bundle, checksums, exact prepared-input schema, a tested
-inference command, and the procedure for a new rig and driving video.
+four-file checkpoint bundle, checksums, exact prepared-input schema, the
+GLB rendering/first-frame command, and the inference procedure.
 
 <details>
 <summary>Optional rest-pose appearance checkpoint</summary>

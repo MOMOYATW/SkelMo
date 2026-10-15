@@ -108,6 +108,49 @@ undo the scene/camera normalization and retarget by the supplied joint names.
 
 ## Preparing a new skeleton
 
+For an **animated, rigged GLB**, the repository now includes the rendering and
+first-frame preparation command. Run it with Python containing Blender's
+`bpy` module (Blender 4.0 was tested):
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m preprocess.static_camera_pilot.render_checkpoint_input \
+  --glb /path/to/animated_character.glb \
+  --output inputs/character_run \
+  --frames 32 --fps 30 --resolution 512 --azimuth -90
+
+CUDA_VISIBLE_DEVICES=0 python -m sample.generate_checkpoint \
+  --checkpoint checkpoints/skelmo/model000099999.pt \
+  --stats checkpoints/skelmo/training_stats.json \
+  --pca checkpoints/skelmo/pca_128.npz \
+  --input inputs/character_run/firstframe_input.npz \
+  --frames-dir inputs/character_run/frames \
+  --seed 2026 --guidance-scale 1 --output outputs/character_run
+```
+
+The first command writes the uncropped ordered frames, `firstframe_input.npz`,
+`camera.json`, and `first_frame_projection.png`. It uses the training render's
+full-action bounding-box normalization, static 35 mm / 32 mm-sensor camera,
+studio lights, and evaluated frame-zero bone heads. It never writes later 3D
+poses to the inference NPZ. Both commands refuse to overwrite an existing
+output directory. Inspect the projection image before sampling. A same-asset
+training-data check reproduced the original first-frame 3D joints within
+`3e-8` normalized units, the projection within `3.1e-5` pixels at 512 px,
+and the render within `0.032/255` mean absolute RGBA channel difference.
+
+If the GLB has multiple actions, pass `--action NAME`; use `--start-frame` to
+choose the inference window. When only part of the hierarchy should be used,
+pass `--joints-json` containing a parent-first JSON list of bone names, with
+exactly one root and 2–143 joints. This is how helper/end bones can be pruned
+consistently. The default scene normalization covers the full action; use
+`--normalization-end-frame` only when you need to match a known capped render
+range. Keep the saved `camera.json` with the result for inverse transforms and
+retargeting. Rendering 32 frames requires an animated action of at least that
+length; choose a shorter `--frames` value for a shorter action.
+
+For a separately supplied driving video, the GLB renderer does not infer its
+camera or first pose. Prepare the same NPZ fields and exact pixel projection
+from that video's known calibration, following the manual steps below:
+
 1. Obtain the evaluated/deformed bone-head positions for the **first video
    frame** from the rig, along with the parent hierarchy and joint names.
    Remove helper/end joints consistently from every array, and retain one
@@ -129,12 +172,14 @@ undo the scene/camera normalization and retarget by the supplied joint names.
 
 ## Driving video: required preparation
 
-This checkpoint does **not** take an arbitrary MP4 by itself. The verified
-route starts with a rigged character, its observed frame-zero 3D pose, and a
-fixed, calibrated render camera. Frame zero of the driving sequence must show
-that same posed character from that same camera. A monocular video without
-known camera and frame-zero 3D pose needs a separate estimation/calibration
-stage; this release does not claim to solve it automatically.
+This checkpoint does **not** take an arbitrary MP4 by itself. For a rigged,
+animated GLB, use the renderer above to create the aligned frames and prepared
+input automatically. For other driving videos, the verified route still needs
+the observed frame-zero 3D pose and a fixed, calibrated camera. Frame zero of
+the driving sequence must show that same posed character from that same
+camera. A monocular video without known camera and frame-zero 3D pose needs a
+separate estimation/calibration stage; this release does not claim to solve it
+automatically.
 
 1. Render the posed character and its subsequent motion with one fixed camera.
    Save the exact render intrinsics, world-to-camera transform, scene

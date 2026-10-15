@@ -63,9 +63,9 @@ GLB rendering/first-frame command, and the inference procedure.
 This variant replaces only the per-joint appearance descriptors with merged
 14-view rest-pose DINO features. It still conditions on the aligned **first
 video frame** and uses the same calibrated 32-frame video input. Its separate
-bundle is `skelmo_rest_merged_checkpoint_bundle.tar.gz` (SHA-256:
-`fd089b83959af87a7c2a07847c83b283c31c771f94da09a04254b9f4c83dbcbd`);
-the public download link will be added once hosted.
+bundle is [available here](https://drive.google.com/file/d/1yqu-rJMjgmCVTmmTlLLYAPU6B5feWBnR/view?usp=sharing)
+(`skelmo_rest_merged_checkpoint_bundle.tar.gz`, SHA-256:
+`fd089b83959af87a7c2a07847c83b283c31c771f94da09a04254b9f4c83dbcbd`).
 
 Use the [prepared-input contract](docs/CHECKPOINT_INFERENCE.md), adding
 `rest_pose` (`[J,3]`, rest joints in the same camera frame) and

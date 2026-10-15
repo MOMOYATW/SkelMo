@@ -56,6 +56,7 @@ def main():
         motion_representation=args.motion_representation,
         reference_condition_mode=args.reference_condition_mode,
         position_target_mode=args.position_target_mode,
+        joint_feature_source=args.joint_feature_source,
         max_records=args.max_train_clips,
         balance_power=args.balance_power,
         joint_permutation_prob=args.joint_permutation_prob,

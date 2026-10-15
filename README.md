@@ -16,9 +16,10 @@ SkelMo generates category-agnostic skeletal animation for an arbitrary rigged 3D
 
 - [x] Training and model code
 - [x] Inference code for preprocessed inputs
-- [x] SkelMo 72k pretrained checkpoint
-- [x] Skeleton and rest-pose joint-feature preprocessing
-- [ ] Dataset assets and driving-video feature extraction (subject to their respective licenses)
+- [x] Validated checkpoint inference code and input contract
+- [x] Checkpoint bundle available
+- [x] Skeleton preprocessing utilities and dense-DINO extraction from calibrated RGB frames
+- [ ] Dataset assets (subject to their respective licenses)
 
 ## Installation
 
@@ -43,111 +44,49 @@ train/          Distributed training entry points
 utils/          Skeleton preprocessing and common utilities
 ```
 
-## Pretrained checkpoint
+## Checkpoint
 
-Download the [SkelMo 72k checkpoint bundle from Google Drive](https://drive.google.com/file/d/1LaKArVrWRz0vKXAxFlRHwTKhAApOxdEq/view?usp=sharing),
-then place the model and its matching configuration in the same directory:
+Download the [checkpoint bundle](https://drive.google.com/file/d/1ZJ4BKAkn4ms21tmoiNAxJtbXDT3GmKtZ/view?usp=sharing).
+The 32-frame checkpoint uses calibrated first-frame joint projections
+and a PCA128 dense-DINO video grid. For a new rig or driving video, inference
+requires the aligned first-frame 3D skeleton, calibrated camera, and uncropped
+frames; these are not inferred automatically. See the
+[checkpoint inference guide](docs/CHECKPOINT_INFERENCE.md) for the
+four-file checkpoint bundle, checksums, exact prepared-input schema, a tested
+inference command, and the procedure for a new rig and driving video.
 
-```text
-checkpoints/skelmo_final_72k/
-├── args.json
-└── skelmo_final_72k.pt
-```
+<details>
+<summary>Optional rest-pose appearance checkpoint</summary>
 
-`args.json` is required because inference restores the model configuration from the checkpoint directory.
+This variant replaces only the per-joint appearance descriptors with merged
+14-view rest-pose DINO features. It still conditions on the aligned **first
+video frame** and uses the same calibrated 32-frame video input. Its separate
+bundle is `skelmo_rest_merged_checkpoint_bundle.tar.gz` (SHA-256:
+`fd089b83959af87a7c2a07847c83b283c31c771f94da09a04254b9f4c83dbcbd`);
+the public download link will be added once hosted.
 
-SHA-256 checksums:
-
-```text
-f790a483fd2b8feaa0b20b73b38a0d5f9c39c5fa0c28f9d93c199fab63d6e76a  skelmo_final_72k.pt
-e8a5caed03656f56d9a6ba95357c37514a1798b81c1880d0f39af8e0ce66f00e  args.json
-```
-
-## Preparing inference inputs
-
-SkelMo expects a processed target skeleton and DINOv2 features from the driving video.
-
-### Target skeleton
-
-The target asset must have the following layout. `sample.generate` locates the
-joint features relative to `cond.npy`, so the two paths must retain this
-relationship.
-
-```text
-<asset>/
-├── joint_averaged_features.npy
-└── processed_skeleton/
-    └── cond.npy
-```
-
-Create `cond.npy` from one or more BVH animations of the target skeleton:
+Use the [prepared-input contract](docs/CHECKPOINT_INFERENCE.md), adding
+`rest_pose` (`[J,3]`, rest joints in the same camera frame) and
+`rest_appearance` (`[J,768]`, 14-view DINO descriptors) to the NPZ in the
+same joint order. Generate the descriptors with
+[`preprocess.joint_features.pipeline`](preprocess/joint_features/README.md):
+for each joint, select its `joint_max_weight_features.npy` descriptor, falling
+back to `joint_averaged_features.npy`. Use only files produced by your own
+trusted preprocessing run.
 
 ```bash
-python -m utils.process_new_skeleton \
-  --bvh_dir /path/to/asset/bvhs \
-  --save_dir /path/to/asset/processed_skeleton \
-  --tpos_bvh /path/to/asset/rest_pose.bvh
+mkdir -p checkpoints
+tar -xzf skelmo_rest_merged_checkpoint_bundle.tar.gz -C checkpoints
+CUDA_VISIBLE_DEVICES=0 python -m sample.generate_checkpoint \
+  --checkpoint checkpoints/skelmo_rest_merged/model000099999.pt \
+  --stats checkpoints/skelmo_rest_merged/training_stats.json \
+  --pca checkpoints/skelmo_rest_merged/pca_128.npz \
+  --input /path/to/rest_prepared.npz \
+  --frames-dir /path/to/uncropped_square_frames \
+  --seed 2026 --guidance-scale 1 --output outputs/rest_example
 ```
 
-Using multiple representative BVH files improves the motion normalization
-statistics. `--tpos_bvh` is optional; when omitted, the script selects a pose
-from the supplied animations. The resulting `cond.npy` stores the joint
-hierarchy, rest pose, offsets, graph relations, joint names, and normalization
-metadata.
-
-Generate the matching rest-pose joint features from rigged GLB assets:
-
-```bash
-python -m preprocess.joint_features.pipeline \
-  --input-dir /path/to/rigged_glbs \
-  --render-root /path/to/work/renders \
-  --output-root /path/to/work/features
-```
-
-The pipeline requires Blender 4.x and uses DINOv2 ViT-B/14 to produce the
-768-dimensional descriptors expected by the released model. Copy
-`<output-root>/<asset>/joint_averaged_features.npy` to `<asset>/`, as shown
-above. See the [joint-feature preprocessing guide](preprocess/joint_features/README.md)
-for the stage layout, Blender options, output schema, and validation commands.
-
-### Driving-video features
-
-Driving-video features are expected under `<video_dir>/features/`:
-
-```text
-<video_dir>/features/
-├── timestep_00_view_00_features.npz
-├── timestep_01_view_00_features.npz
-└── ...
-```
-
-Each NPZ file must contain a `features` array with shape `[1, 1370, 768]`: one
-CLS token followed by a 37 x 37 DINOv2 ViT-B/14 patch grid. Files are sorted by
-the numeric timestep. There is no longer a hard-coded 40-frame inference cap;
-use `--max_frames` to request an explicit prefix, or leave it at zero to use the
-complete sequence.
-
-New checkpoints can instead use compact joint correspondence tracks. A track
-cache has shape `[frames, joints, 776]` in FP16 and contains a matched DINO
-appearance descriptor plus image-space correspondence statistics. This avoids
-running frozen DINO in every training epoch and avoids the expensive 1369-patch
-attention path.
-
-## Inference
-
-After preparing a target skeleton and video features, run:
-
-```bash
-python -m sample.generate \
-  --model_path checkpoints/skelmo_final_72k/skelmo_final_72k.pt \
-  --cond_path /path/to/processed_skeleton/cond.npy \
-  --video_dir /path/to/driving_video \
-  --object_type Target \
-  --num_repetitions 1 \
-  --output_dir outputs/example
-```
-
-The command writes skeletal motion as NumPy, BVH, and MP4 files. An inverse-kinematics refinement projects generated joints back onto the target skeleton to preserve bone lengths.
+</details>
 
 ## Validation
 
@@ -159,69 +98,13 @@ python -m unittest discover -s preprocess/joint_features/tests -v
 
 ## Training
 
-The processed training root follows this layout:
-
-```text
-<data_root>/<asset>/
-├── joint_max_weight_features.npy
-├── imgs_<sequence>/
-│   └── timestep_<frame>_view_00.png
-└── processed_skeleton/
-    ├── cond.npy
-    └── global_motions/
-        └── *.npy
-```
-
-Train on four GPUs with an effective batch size of 16:
-
-```bash
-torchrun --standalone --nproc_per_node=4 -m train.train_skelmo \
-  --data_dir /path/to/processed_dataset \
-  --save_dir save/skelmo \
-  --batch_size 4 \
-  --num_frames 40 \
-  --num_steps 80000 \
-  --model_prefix skelmo \
-  --overwrite
-```
-
-For scalable training, first generate compact joint tracks. The command can be
-sharded across GPUs by changing `--shard-index` from 0 to 7:
-
-```bash
-python -m preprocess.video_joint_tracks \
-  --data-dir /path/to/processed_dataset \
-  --device cuda:0 \
-  --num-shards 8 \
-  --shard-index 0
-```
-
-Then train a larger model on longer random windows without invoking DINO in the
-training process:
-
-```bash
-torchrun --standalone --nproc_per_node=8 -m train.train_skelmo \
-  --data_dir /path/to/processed_dataset \
-  --save_dir save/skelmo_joint_tracks_128f \
-  --video_feature_mode joint_tracks \
-  --num_frames 128 \
-  --temporal_window 65 \
-  --latent_dim 384 \
-  --layers 8 \
-  --heads 6 \
-  --ff_size 1536 \
-  --batch_size 2 \
-  --num_steps 80000 \
-  --overwrite
-```
-
-The compact loader applies a consistent non-root joint permutation, leaf
-pruning, degree-2 bone subdivision, and can mask rest-pose descriptors or
-complete visual joint tracks. Control these with `--joint_permutation_prob`,
-`--leaf_prune_prob`, `--joint_subdivision_prob`,
-`--joint_feature_dropout_prob`, and `--video_joint_dropout_prob`.
-
-Alternatively, set `SKELMO_DATASET_DIR` instead of passing `--data_dir`.
+The checkpoint was trained for 100,000 steps on random 32-frame
+windows from a yaw-balanced dataset. It uses first-frame DINO joint features,
+dense PCA128 video features, full spatial/temporal/reverse video attention,
+fixed-residual fusion (scale 0.1), and pure conditional `l_simple` diffusion.
+The processed training dataset is not part of this repository release. Consult
+the checkpoint's `args.json` for the exact model configuration; do not assume
+other training examples or input formats are compatible with these weights.
 
 ## Citation
 

@@ -43,9 +43,16 @@ class TrainLoop:
         self.save_interval = args.save_interval
         self.resume_checkpoint = args.resume_checkpoint
         self.use_fp16 = False
+        self.use_bf16 = bool(getattr(args, 'use_bf16', False))
+        if self.use_bf16:
+            if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
+                raise RuntimeError("--use_bf16 requires a BF16-capable CUDA device")
         self.fp16_scale_growth = 1e-3
         self.weight_decay = args.weight_decay
         self.lr_anneal_steps = args.lr_anneal_steps
+        self.lr_min_ratio = float(getattr(args, 'lr_min_ratio', 0.0))
+        if not 0.0 <= self.lr_min_ratio <= 1.0:
+            raise ValueError("lr_min_ratio must be in [0, 1]")
 
         self.step = 0
         self.resume_step = 0
@@ -317,12 +324,18 @@ class TrainLoop:
                     if self.use_ddp and not synchronize
                     else nullcontext()
                 )
+                amp_context = (
+                    torch.autocast(device_type='cuda', dtype=torch.bfloat16)
+                    if self.use_bf16
+                    else nullcontext()
+                )
                 with context:
-                    branch_losses = compute_losses()
-                    branch_loss = (branch_losses["loss"] * weights).mean()
-                    branch_loss = (
-                        branch_loss * multiplier / self.gradient_accumulation_steps
-                    )
+                    with amp_context:
+                        branch_losses = compute_losses()
+                        branch_loss = (branch_losses["loss"] * weights).mean()
+                        branch_loss = (
+                            branch_loss * multiplier / self.gradient_accumulation_steps
+                        )
                     self.mp_trainer.backward(branch_loss)
                 return branch_losses
 
@@ -361,8 +374,10 @@ class TrainLoop:
     def _anneal_lr(self):
         if not self.lr_anneal_steps:
             return
-        frac_done = (self.step + self.resume_step) / self.lr_anneal_steps
-        lr = self.lr * (1 - frac_done)
+        frac_done = min(1.0, (self.step + self.resume_step) / self.lr_anneal_steps)
+        lr = self.lr * (
+            self.lr_min_ratio + (1.0 - self.lr_min_ratio) * (1.0 - frac_done)
+        )
         for param_group in self.opt.param_groups:
             param_group["lr"] = lr
 

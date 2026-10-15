@@ -295,11 +295,26 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
     def __init__(self, d_model: int, nhead: int, dim_feedforward: int = 2048, dropout: float = 0.1,
                  activation: Union[str, Callable[[Tensor], Tensor]] = F.relu,
                  compact_video: bool = False,
-                 joint_feature_dim: int = 768):
+                 joint_feature_dim: int = 768,
+                 video_spatiotemporal_attention: bool = True,
+                 video_attention_fusion: str = "legacy",
+                 video_attention_residual_scale: float = 0.1):
         super().__init__(d_model, nhead, dim_feedforward, dropout, activation)
         self.d_model= d_model
         self.heads = nhead
         self.compact_video = compact_video
+        self.video_spatiotemporal_attention = bool(video_spatiotemporal_attention)
+        if video_attention_fusion not in {"legacy", "fixed_residual"}:
+            raise ValueError(
+                f"Unsupported video_attention_fusion: {video_attention_fusion}"
+            )
+        self.video_attention_fusion = video_attention_fusion
+        self.video_attention_residual_scale = float(video_attention_residual_scale)
+        if not 0.0 < self.video_attention_residual_scale <= 1.0:
+            raise ValueError(
+                "video_attention_residual_scale must be in (0, 1], got "
+                f"{self.video_attention_residual_scale}"
+            )
         self.spatial_attn = GraphMultiHeadAttention(d_model = d_model, nheads = nhead, dropout=dropout)
         self.temporal_attn = MultiheadAttention(self.d_model, nhead, dropout=dropout)
         self.embed_timesteps = nn.Linear(d_model, d_model)
@@ -370,7 +385,8 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
 
         attn_output, _ = self.reverse_video_cross_attn(
             query, key, value,
-            key_padding_mask=rev_kp_mask
+            key_padding_mask=rev_kp_mask,
+            need_weights=False,
         )
 
         attn_output = attn_output.view(token_count, bs, frames, feats).permute(1, 2, 0, 3)
@@ -397,7 +413,8 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         output_attn, _ = self.video_cross_attn(
             query, key, value,
             attn_mask=None,
-            key_padding_mask=video_kp_mask
+            key_padding_mask=video_kp_mask,
+            need_weights=False,
         )
 
         output_attn = output_attn.view(njoints, bs, frames, feats).permute(2, 1, 0, 3)
@@ -418,6 +435,7 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
             query, key, value,
             attn_mask=None,
             key_padding_mask=None,
+            need_weights=False,
         )
 
         output_attn = output_attn.view(frames, bs, njoints, feats)
@@ -470,19 +488,50 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
                 input_video + self.skeleton_dropout(x.permute(1, 0, 2, 3))
             )
         else:
-            # Dense DINO is a fixed visual memory.  Updating all 1369 patches
-            # spatially and temporally in every decoder layer is both redundant
-            # with the frozen backbone and prohibitive for 128-frame clips.
+            if self.video_spatiotemporal_attention:
+                refined_video = self.dino_temporal_attn(
+                    self.dino_spatial_attn(input_video)
+                )
+                if self.video_attention_fusion == "fixed_residual":
+                    input_video = input_video + self.video_attention_residual_scale * (
+                        refined_video - input_video
+                    )
+                else:
+                    input_video = refined_video
             video_attn_output = self._video_cross_attn_block(
                 x, input_video, tgt_key_padding_mask
             )
             x = self.norm_video(x + video_attn_output)
+            if self.video_spatiotemporal_attention:
+                skeleton_attn_output = self._reverse_video_cross_attn_block(
+                    x, input_video, tgt_key_padding_mask
+                )
+                reverse_candidate = self.norm_skeleton(
+                    input_video + skeleton_attn_output
+                )
+                if self.video_attention_fusion == "fixed_residual":
+                    input_video = input_video + self.video_attention_residual_scale * (
+                        reverse_candidate - input_video
+                    )
+                else:
+                    input_video = reverse_candidate
         dino_attn_output = self._rest_pose_cross_attn_block(
             x, y['joints_names_embs'].to(x.device), None
         )
         x = self.norm_dino(x + dino_attn_output)
         x = self.norm3(x + self._ff_block(x))
 
-        if self.compact_video:
-            input_video = self.norm_skeleton_2(input_video + self._ff_block_2(input_video))
+        if self.compact_video or self.video_spatiotemporal_attention:
+            video_ff_candidate = self.norm_skeleton_2(
+                input_video + self._ff_block_2(input_video)
+            )
+            if (
+                self.video_spatiotemporal_attention
+                and self.video_attention_fusion == "fixed_residual"
+            ):
+                input_video = input_video + self.video_attention_residual_scale * (
+                    video_ff_candidate - input_video
+                )
+            else:
+                input_video = video_ff_candidate
         return x, input_video

@@ -130,6 +130,40 @@ def _appearance_joint_features(root, record, joint_names):
     return features
 
 
+def _sample_dense_joint_features(dense_frame, uv, visible, resolution):
+    """Bilinearly sample a PCA-DINO patch map at projected joint pixels."""
+    dense_frame = np.asarray(dense_frame, dtype=np.float32)
+    uv = np.asarray(uv, dtype=np.float32)
+    visible = np.asarray(visible, dtype=bool)
+    patch_count, feature_dim = dense_frame.shape
+    side = int(round(patch_count ** 0.5))
+    if side * side != patch_count:
+        raise ValueError(f"Dense DINO patch count is not square: {patch_count}")
+    if uv.shape != (len(visible), 2):
+        raise ValueError(f"Joint projection shape mismatch: {uv.shape}, {visible.shape}")
+
+    # Dense DINO extraction resizes the whole square render to 518x518 and
+    # produces a 37x37 grid. This is the NumPy equivalent of grid_sample with
+    # align_corners=True used by extract_joint_tracks.py.
+    grid = uv / max(float(resolution) - 1.0, 1.0) * (side - 1.0)
+    grid = np.clip(grid, 0.0, side - 1.0)
+    x0 = np.floor(grid[:, 0]).astype(np.int64)
+    y0 = np.floor(grid[:, 1]).astype(np.int64)
+    x1 = np.minimum(x0 + 1, side - 1)
+    y1 = np.minimum(y0 + 1, side - 1)
+    wx = (grid[:, 0] - x0)[:, None]
+    wy = (grid[:, 1] - y0)[:, None]
+    patch_map = dense_frame.reshape(side, side, feature_dim)
+    sampled = (
+        patch_map[y0, x0] * (1.0 - wx) * (1.0 - wy)
+        + patch_map[y0, x1] * wx * (1.0 - wy)
+        + patch_map[y1, x0] * (1.0 - wx) * wy
+        + patch_map[y1, x1] * wx * wy
+    )
+    sampled[~visible] = 0.0
+    return sampled.astype(np.float32)
+
+
 def _conditioning_pose(motion, rest, mode):
     """Choose the numeric reference token without changing motion targets."""
     if mode == "rest":
@@ -171,6 +205,7 @@ class StaticCameraDataset(data.Dataset):
         motion_representation="positions_rot6d",
         reference_condition_mode="rest",
         position_target_mode="absolute",
+        joint_feature_source="rest_merged",
         max_records=0,
         balanced=False,
         balance_power=0.5,
@@ -188,6 +223,7 @@ class StaticCameraDataset(data.Dataset):
         self.motion_representation = motion_representation
         self.reference_condition_mode = reference_condition_mode
         self.position_target_mode = position_target_mode
+        self.joint_feature_source = joint_feature_source
         self.joint_permutation_prob = float(joint_permutation_prob)
         self.joint_feature_dropout_prob = float(joint_feature_dropout_prob)
         self.video_joint_dropout_prob = float(video_joint_dropout_prob)
@@ -214,6 +250,16 @@ class StaticCameraDataset(data.Dataset):
             )
         if position_target_mode not in {"absolute", "first_frame_delta"}:
             raise ValueError(f"Unsupported position target mode: {position_target_mode}")
+        if joint_feature_source not in {"rest_merged", "first_frame_dino"}:
+            raise ValueError(f"Unsupported joint feature source: {joint_feature_source}")
+        if joint_feature_source == "first_frame_dino" and (
+            video_feature_mode != "dense_dino"
+            or reference_condition_mode != "first_frame"
+        ):
+            raise ValueError(
+                "first_frame_dino requires dense_dino video and "
+                "first-frame conditioning"
+            )
         if position_target_mode == "first_frame_delta" and (
             motion_representation != "positions" or reference_condition_mode != "first_frame"
         ):
@@ -244,11 +290,16 @@ class StaticCameraDataset(data.Dataset):
                 continue
             asset = Path(record["asset_path"]).stem.split("_", 1)[0]
             feature_root = self.root / "rest_joint_features" / asset
-            required = (
+            required = [
                 self.cache_root / f"{record['clip_id']}.{self.video_cache_filename}",
-                feature_root / "joint_averaged_features.npy",
-                feature_root / "joint_max_weight_features.npy",
-            )
+            ]
+            if self.joint_feature_source == "rest_merged":
+                required.extend(
+                    [
+                        feature_root / "joint_averaged_features.npy",
+                        feature_root / "joint_max_weight_features.npy",
+                    ]
+                )
             if all(path.is_file() for path in required):
                 records.append(record)
         if not records:
@@ -336,20 +387,42 @@ class StaticCameraDataset(data.Dataset):
         offsets = rest_geometry.copy()
         valid = parents >= 0
         offsets[valid] -= rest_geometry[parents[valid]]
-        structure = _structural_joint_features(
-            rest_geometry, parents, width=self.dino_pca_components.shape[1]
-        )
-        structure /= np.maximum(np.linalg.norm(structure, axis=-1, keepdims=True), 1e-8)
-        appearance = _appearance_joint_features(
-            self.root, record, rig["joint_names"]
-        )
-        appearance = (
-            appearance - self.dino_pca_mean
-        ) @ self.dino_pca_components
-        appearance /= np.maximum(
-            np.linalg.norm(appearance, axis=-1, keepdims=True), 1e-8
-        )
-        joint_features = np.concatenate([appearance, structure], axis=-1)
+        feature_width = self.dino_pca_components.shape[1]
+        if self.joint_feature_source == "rest_merged":
+            structure = _structural_joint_features(
+                rest_geometry, parents, width=feature_width
+            )
+            structure /= np.maximum(
+                np.linalg.norm(structure, axis=-1, keepdims=True), 1e-8
+            )
+            appearance = _appearance_joint_features(
+                self.root, record, rig["joint_names"]
+            )
+            appearance = (
+                appearance - self.dino_pca_mean
+            ) @ self.dino_pca_components
+            appearance /= np.maximum(
+                np.linalg.norm(appearance, axis=-1, keepdims=True), 1e-8
+            )
+            joint_features = np.concatenate([appearance, structure], axis=-1)
+        else:
+            camera_meta = json.loads(
+                (Path(record["render_dir"]) / "v000.json").read_text()
+            )
+            aligned = _sample_dense_joint_features(
+                tracks[1],
+                values["joint_position_2d_px"][start],
+                values["joint_in_frame"][start],
+                camera_meta["resolution"],
+            )
+            aligned /= np.maximum(
+                np.linalg.norm(aligned, axis=-1, keepdims=True), 1e-8
+            )
+            # The checkpoint expects 256-D joint descriptors. The second half
+            # is zero rather than a rest-pose or structural feature.
+            joint_features = np.concatenate(
+                [aligned, np.zeros_like(aligned)], axis=-1
+            )
 
         if random.random() < self.leaf_prune_prob:
             joint_arrays = [

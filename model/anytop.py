@@ -105,6 +105,15 @@ class SkelMo(nn.Module):
         self.video_track_dim = int(kargs.get('video_track_dim', 776))
         self.video_dense_dim = int(kargs.get('video_dense_dim', 128))
         self.joint_feature_dim = int(kargs.get('joint_feature_dim', 768))
+        self.video_spatiotemporal_attention = bool(
+            kargs.get('video_spatiotemporal_attention', False)
+        )
+        self.video_attention_fusion = kargs.get(
+            'video_attention_fusion', 'legacy'
+        )
+        self.video_attention_residual_scale = float(
+            kargs.get('video_attention_residual_scale', 0.1)
+        )
         if self.video_feature_mode not in {'rgb', 'dense_dino', 'joint_tracks'}:
             raise ValueError(f"Unsupported video feature mode: {self.video_feature_mode}")
         self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim)
@@ -119,7 +128,10 @@ class SkelMo(nn.Module):
                                                             dropout=self.dropout,
                                                             activation=self.activation,
                                                             compact_video=self.video_feature_mode == 'joint_tracks',
-                                                            joint_feature_dim=self.joint_feature_dim)
+                                                            joint_feature_dim=self.joint_feature_dim,
+                                                            video_spatiotemporal_attention=self.video_spatiotemporal_attention,
+                                                            video_attention_fusion=self.video_attention_fusion,
+                                                            video_attention_residual_scale=self.video_attention_residual_scale)
         self.seqTransDecoder = GraphMotionDecoder(seqTransDecoderLayer,
                                                         num_layers=self.num_layers, value_emb=self.value_emb)
 

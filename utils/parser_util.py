@@ -98,6 +98,19 @@ def add_model_options(parser):
     group.add_argument("--joint_feature_dim", default=256, type=int,
                        help="Width of concatenated rest appearance and structure features.")
     group.add_argument(
+        "--video_spatiotemporal_attention", action="store_true",
+        help="Enable spatial, temporal, and reverse attention over dense video features.",
+    )
+    group.add_argument(
+        "--video_attention_fusion", default="legacy",
+        choices=["legacy", "fixed_residual"],
+        help="Video-memory update rule used by the checkpoint.",
+    )
+    group.add_argument(
+        "--video_attention_residual_scale", default=0.1, type=float,
+        help="Residual mixing scale for fixed-residual video attention.",
+    )
+    group.add_argument(
         "--motion_representation",
         default="positions",
         choices=["positions", "positions_rot6d"],
@@ -120,6 +133,11 @@ def add_model_options(parser):
             "Represent XYZ targets in absolute gravity-camera coordinates, or "
             "as displacement from the conditioned first frame."
         ),
+    )
+    group.add_argument(
+        "--joint_feature_source", default="rest_merged",
+        choices=["rest_merged", "first_frame_dino"],
+        help="Source of per-joint descriptors for the video-conditioned model.",
     )
     group.add_argument(
         "--video_cache_filename",
@@ -170,12 +188,20 @@ def add_training_options(parser):
                        help="Unique string at the beggining of the model name.")
     group.add_argument("--overwrite", action='store_true',
                        help="If True, will enable to use an already existing save_dir.")
+    group.add_argument(
+        "--use_bf16", action="store_true",
+        help="Use CUDA bfloat16 autocast with FP32 parameters and optimizer states.",
+    )
     group.add_argument("--ml_platform_type", default='TensorboardPlatform', choices=['NoPlatform', 'TensorboardPlatform'], type=str,
                        help="Choose platform to log results. NoPlatform means no logging.")
     group.add_argument("--lr", default=1e-4, type=float, help="Learning rate.")
 
     group.add_argument("--weight_decay", default=1e-4, type=float, help="Optimizer weight decay.")
     group.add_argument("--lr_anneal_steps", default=0, type=int, help="Number of learning rate anneal steps.")
+    group.add_argument(
+        "--lr_min_ratio", default=0.0, type=float,
+        help="Minimum learning rate as a fraction of the initial rate.",
+    )
     group.add_argument("--eval_batch_size", default=32, type=int,
                        help="Batch size during evaluation loop. Do not change this unless you know what you are doing. "
                             "T2m precision calculation is based on fixed batch size 32.")

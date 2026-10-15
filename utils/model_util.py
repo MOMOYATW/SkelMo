@@ -34,7 +34,18 @@ def get_gmdm_args(args):
             'reference_condition_mode': getattr(args, 'reference_condition_mode', 'rest'),
             'video_track_dim': args.video_track_dim,
             'video_dense_dim': args.video_dense_dim,
-            'joint_feature_dim': args.joint_feature_dim}
+            'joint_feature_dim': args.joint_feature_dim,
+            # Checkpoints produced before the restored video pathway did not
+            # record this field and must retain their fixed-memory behavior.
+            'video_spatiotemporal_attention': getattr(
+                args, 'video_spatiotemporal_attention', False
+            ),
+            'video_attention_fusion': getattr(
+                args, 'video_attention_fusion', 'legacy'
+            ),
+            'video_attention_residual_scale': getattr(
+                args, 'video_attention_residual_scale', 0.1
+            )}
 
 def create_gaussian_diffusion(args):
     predict_xstart = True

@@ -1,6 +1,8 @@
 # Joint-feature preprocessing
 
-This module extracts the 768-dimensional rest-pose descriptors used by SkelMo.
+This module extracts the 768-dimensional rest-pose descriptors used by the
+optional rest-pose appearance checkpoint. The primary checkpoint does not need
+these descriptors.
 It renders a rigged GLB from multiple views, projects mesh vertices into those
 views, samples DINO descriptors, and pools the vertex descriptors to joints
 using skinning weights.
@@ -39,10 +41,10 @@ Useful options:
 --dry-run                     Print commands without executing them.
 ```
 
-The released model expects 768-dimensional features, so the default encoder is
-`dinov2_vitb14`. The pipeline rejects incompatible feature dimensions. DINOv3
-is also supported when an explicit checkpoint and local source checkout are
-provided.
+The optional rest-pose appearance checkpoint expects features from
+`dinov2_vitb14`, the default encoder. The pipeline rejects incompatible feature
+dimensions. Its DINOv3 option is for separate preprocessing experiments, not
+for this checkpoint; matching dimensionality alone is not sufficient.
 
 ## Pipeline stages
 
@@ -71,21 +73,17 @@ joint_averaged_features.npy
 joint_max_weight_features.npy
 ```
 
-`joint_averaged_features.npy` maps joint names to skin-weighted DINO features
-and is consumed by inference. Place it beside the asset's
-`processed_skeleton/` directory:
-
-```text
-<asset>/
-├── joint_averaged_features.npy
-└── processed_skeleton/
-    └── cond.npy
-```
-
+Both joint-feature files map joint names to DINO descriptors.
 `joint_max_weight_features.npy` pools each vertex under its strongest skinning
-influence and is used by the training data loader. `features.npz` retains the
-full vertex features, joint features, coverage masks, skinning arrays, and fill
-provenance for reproducibility.
+influence; `joint_averaged_features.npy` uses skin-weighted averaging. For the
+optional checkpoint, match the names to the prepared skeleton's joint order,
+take the max-weight descriptor when present and fall back to the averaged one,
+then stack them as `rest_appearance` with shape `[J,768]`. Also provide
+`rest_pose` with shape `[J,3]`, transformed into the same camera frame and scale
+as `first_pose`. See the collapsed rest-pose section of the root README for the
+inference command. Load these `.npy` dictionaries only when you trust their
+source. `features.npz` retains the full vertex features, joint features,
+coverage masks, skinning arrays, and fill provenance for reproducibility.
 
 ## Tests
 

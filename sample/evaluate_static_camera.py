@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import random
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,7 +33,7 @@ def parse_args():
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--split", choices=("train", "val", "test"), default="val")
     parser.add_argument("--clip-id", action="append", dest="clip_ids")
-    parser.add_argument("--guidance-scale", type=float, default=2.0)
+    parser.add_argument("--guidance-scale", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=1234)
     return parser.parse_args()
 
@@ -166,13 +167,15 @@ def draw_skeleton(draw, uv, depth, parents, color, width, radius):
             )
 
 
-def render_overlay(output, record, predicted, target, parents, metrics):
+def render_overlay(output, record, predicted, target, parents, metrics, crop_start=0):
     frames_dir = output / "frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
     with np.load(record["motion_path"], allow_pickle=False) as source:
         motion = {key: source[key] for key in source.files}
     fps = int(motion["fps"])
-    start = int(record["frame_start"])
+    # StaticCameraDataset may select a random temporal crop.  The RGB frames
+    # must use the same offset as motion and cached DINO features.
+    start = int(record["frame_start"]) + int(crop_start)
     render_dir = Path(record["render_dir"]) / "v000"
     for frame_index in range(len(predicted)):
         frame_path = render_dir / f"{start + frame_index:04d}.webp"
@@ -222,7 +225,7 @@ def build_index(output, checkpoint, split, rows):
             )
         cards.append(
             f"""<article><h2>{html.escape(row['clip_id'])}</h2>
-            <p>{row['joints']} joints · {row['frames']} frames · yaw {row['yaw']:+.1f}° · seed {row['seed']}</p>
+            <p>{row['joints']} joints · {row['frames']} frames · crop +{row['crop_start']} · yaw {row['yaw']:+.1f}° · seed {row['seed']}</p>
             <video src="{html.escape(row['video'])}" controls loop muted playsinline preload="metadata"></video>
             <dl><dt>MPJPE</dt><dd>{metrics['mpjpe_cm']:.2f} cm</dd>
             <dt>Root error</dt><dd>{metrics['root_error_cm']:.2f} cm</dd>
@@ -256,6 +259,7 @@ def main():
         motion_representation=args.motion_representation,
         reference_condition_mode=getattr(args, "reference_condition_mode", "rest"),
         position_target_mode=getattr(args, "position_target_mode", "absolute"),
+        joint_feature_source=getattr(args, "joint_feature_source", "rest_merged"),
         joint_permutation_prob=0.0,
         joint_feature_dropout_prob=0.0,
         video_joint_dropout_prob=0.0,
@@ -276,6 +280,7 @@ def main():
     rows = []
     for order, dataset_index in enumerate(selected):
         seed = cli.seed + order
+        random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
@@ -306,13 +311,22 @@ def main():
         mean = condition["y"]["mean"][0, :joints].numpy()
         std = condition["y"]["std"][0, :joints].numpy()
         reference = condition["y"]["tpos_first_frame"][0, :joints].numpy()
+        crop_start = int(condition["y"]["crop_start_ind"][0].item())
         target_mode = getattr(args, "position_target_mode", "absolute")
         predicted = decode_positions(pred_norm, mean, std, reference, target_mode)
         target = decode_positions(true_norm, mean, std, reference, target_mode)
         parents = np.asarray(item[2], dtype=np.int64)
         metrics = compute_metrics(predicted, target, parents)
         clip_output = cli.output / record["clip_id"]
-        video = render_overlay(clip_output, record, predicted, target, parents, metrics)
+        video = render_overlay(
+            clip_output,
+            record,
+            predicted,
+            target,
+            parents,
+            metrics,
+            crop_start=crop_start,
+        )
         np.savez_compressed(
             clip_output / "prediction.npz",
             predicted=predicted,
@@ -324,6 +338,7 @@ def main():
                 "clip_id": record["clip_id"],
                 "joints": joints,
                 "frames": length,
+                "crop_start": crop_start,
                 "yaw": float(record.get("camera_azimuth_deg", 0.0)),
                 "seed": seed,
                 "metrics": metrics,

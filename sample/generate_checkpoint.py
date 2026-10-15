@@ -4,8 +4,6 @@ The prepared NPZ describes a skeleton in the training gravity-camera frame:
 parents [J], first_pose [J,3], joint_uv [J,2], joint_visible [J],
 resolution (scalar), and optionally dense_dino [T,1369,128]. If dense_dino
 is absent, --frames-dir supplies T ordered RGB frames for DINO extraction.
-The optional rest-pose appearance checkpoint also needs rest_pose [J,3] and
-rest_appearance [J,768] in the prepared NPZ.
 Coordinates use the training scene-normalized gravity-camera frame (the
 scene's longest bbox dimension is one unit) and must match the rendered frames.
 """
@@ -42,12 +40,6 @@ EXPECTED_SHA256 = {
     "first_frame_dino": {
         "model000099999.pt": "d662b18663c1d6ae5ba547adbec927e0d9854291b3e4615b146b1cbc628a4547",
         "args.json": "e6e5139536e57d08b76a56c479fc97608585de1fc7fd5f02b911c71777fa7ee6",
-        "training_stats.json": "c62f631c9cd66b210a955219031a0e00155d9eee9e12f6fa2fc69dd7c289c640",
-        "pca_128.npz": "ea6b3e778f1a08333525e4edefba882b4bf1c9f41f7ed4fed61687ab2c2bae6a",
-    },
-    "rest_merged": {
-        "model000099999.pt": "a72f90152390b72b3521f0d88d5d316448170c663da68aad984613fc481ede3c",
-        "args.json": "327a5b997d1c86856d342cd47a155e97ed41a34aa4ec9b17fc050ee390332a5a",
         "training_stats.json": "c62f631c9cd66b210a955219031a0e00155d9eee9e12f6fa2fc69dd7c289c640",
         "pca_128.npz": "ea6b3e778f1a08333525e4edefba882b4bf1c9f41f7ed4fed61687ab2c2bae6a",
     },

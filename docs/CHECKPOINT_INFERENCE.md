@@ -53,5 +53,3 @@ Optional `joint_names [J]` and `fps` are supported. The model coordinates are X-
 Run the same sampling command above with `--input /path/to/firstframe_input.npz` and `--frames-dir /path/to/frames`. It extracts DINOv2 ViT-B/14 features from each **whole** frame using the bundle's PCA basis. Alternatively, provide matching `[T,1369,128]` features with `--features /path/to/dense_dino.npy`. Inspect the generated `first_frame_projection.png`; misalignment usually means a camera, scale, axis, crop, or joint-order mismatch.
 
 Inference covers one window of at most 32 frames. Longer videos need a separate windowing and stitching policy. The optional BVH remains in normalized model-camera coordinates; applying it to the source asset requires inverse scene/camera transforms and retargeting by joint name.
-
-The optional rest-pose appearance checkpoint and its extra inputs are described in the folded section of the [README](../README.md).

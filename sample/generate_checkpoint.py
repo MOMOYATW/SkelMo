@@ -43,6 +43,12 @@ EXPECTED_SHA256 = {
         "training_stats.json": "c62f631c9cd66b210a955219031a0e00155d9eee9e12f6fa2fc69dd7c289c640",
         "pca_128.npz": "ea6b3e778f1a08333525e4edefba882b4bf1c9f41f7ed4fed61687ab2c2bae6a",
     },
+    "rest_averaged": {
+        "model000099999.pt": "f95609da14b5a48c1585d22fd168569e28519b7b0b5362bd014320d3b16268c7",
+        "args.json": "89f1f061f735ecc4b664cac0b7f81a2f51ca392a68b87d88aa193c9a98f87bdd",
+        "training_stats.json": "c62f631c9cd66b210a955219031a0e00155d9eee9e12f6fa2fc69dd7c289c640",
+        "pca_128.npz": "ea6b3e778f1a08333525e4edefba882b4bf1c9f41f7ed4fed61687ab2c2bae6a",
+    },
 }
 
 
@@ -72,6 +78,8 @@ def parse_args():
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--features", type=Path, help="Cached [T,1369,128] PCA-DINO NPY")
     group.add_argument("--frames-dir", type=Path, help="Ordered input PNG/JPG/WebP frames")
+    parser.add_argument("--rest-features", type=Path,
+                        help="Trusted joint_averaged_features.npy from the rest-feature pipeline")
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--guidance-scale", type=float, default=1.0)
     parser.add_argument("--device", default="cuda:0")
@@ -147,7 +155,28 @@ def load_dense_frames(frames_dir, pca_path, device, resolution):
     return np.concatenate(outputs).astype(np.float16)
 
 
-def load_prepared(path, features_path, frames_dir, pca_path, device, joint_feature_source):
+def load_averaged_rest_features(path, joint_names):
+    # The pipeline writes a pickled NumPy dictionary. Never load an untrusted file.
+    if path.name != "joint_averaged_features.npy":
+        raise ValueError("Rest checkpoint requires joint_averaged_features.npy, not a max-weight variant")
+    averaged = np.load(path, allow_pickle=True).item()
+    if not isinstance(averaged, dict):
+        raise ValueError("Rest features must be a joint-name dictionary")
+    features = []
+    for name in np.asarray(joint_names).astype(str):
+        base = name.replace("_end_site", "")
+        feature = averaged.get(name, averaged.get(base))
+        if feature is None:
+            raise KeyError(f"No averaged rest feature for joint {name!r}")
+        features.append(feature)
+    features = np.asarray(features, dtype=np.float32)
+    if features.shape != (len(joint_names), 768) or not np.isfinite(features).all():
+        raise ValueError("Rest features must be finite [J,768] DINO descriptors")
+    return features
+
+
+def load_prepared(path, features_path, frames_dir, pca_path, device,
+                  joint_feature_source, rest_features_path=None):
     with np.load(path, allow_pickle=False) as source:
         values = {key: source[key] for key in source.files}
     resolution = int(values["resolution"])
@@ -180,9 +209,19 @@ def load_prepared(path, features_path, frames_dir, pca_path, device, joint_featu
         raise ValueError(f"Expected 1-32 frames of [1369,128] DINO, got {dense.shape}")
     if not np.isfinite(dense).all():
         raise ValueError("DINO features contain NaN/Inf")
-    if joint_feature_source == "rest_merged":
+    if rest_features_path is not None:
+        if joint_feature_source != "rest_averaged":
+            raise ValueError("--rest-features is only valid for the rest-averaged checkpoint")
+        if "rest_appearance" in values:
+            raise ValueError("Specify rest appearance in the NPZ or --rest-features, not both")
+        if "joint_names" not in values:
+            raise ValueError("--rest-features requires joint_names in the prepared NPZ")
+        values["rest_appearance"] = load_averaged_rest_features(
+            rest_features_path, values["joint_names"]
+        )
+    if joint_feature_source == "rest_averaged":
         if "rest_pose" not in values or "rest_appearance" not in values:
-            raise ValueError("Rest checkpoint requires rest_pose and rest_appearance")
+            raise ValueError("Rest checkpoint requires rest_pose and averaged rest_appearance")
         rest_pose = np.asarray(values["rest_pose"], dtype=np.float32)
         rest_appearance = np.asarray(values["rest_appearance"], dtype=np.float32)
         if rest_pose.shape != (len(parents), 3) or rest_appearance.shape != (len(parents), 768):
@@ -219,7 +258,7 @@ def build_item(dense, parents, first_pose, uv, visible, resolution, stats,
     mean = np.broadcast_to(mean_1, first_pose.shape).copy()
     std = np.broadcast_to(std_1, first_pose.shape).copy()
     reference = (first_pose - mean) / std
-    if joint_feature_source == "rest_merged":
+    if joint_feature_source == "rest_averaged":
         rest_geometry, _ = _root_aligned_rest(values["rest_pose"], first_pose, parents)
         structure = _structural_joint_features(rest_geometry, parents, width=128)
         structure /= np.maximum(np.linalg.norm(structure, axis=-1, keepdims=True), 1e-8)
@@ -261,7 +300,8 @@ def main():
     if device.type == "cuda":
         torch.cuda.manual_seed_all(cli.seed)
     values, dense, parents, first_pose, uv, visible, resolution = load_prepared(
-        cli.input, cli.features, cli.frames_dir, cli.pca, device, joint_feature_source
+        cli.input, cli.features, cli.frames_dir, cli.pca, device,
+        joint_feature_source, cli.rest_features,
     )
     stats = json.loads(cli.stats.read_text())
     item = build_item(dense, parents, first_pose, uv, visible, resolution, stats,

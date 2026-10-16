@@ -19,6 +19,13 @@ The first inference run downloads DINOv2 ViT-B/14 weights through `timm`.
 
 Download the [checkpoint bundle](https://drive.google.com/file/d/1ZJ4BKAkn4ms21tmoiNAxJtbXDT3GmKtZ/view?usp=sharing) and follow the [inference guide](docs/CHECKPOINT_INFERENCE.md). The included renderer prepares uncropped frames, calibrated camera, and first-frame skeleton from an animated rigged GLB. An arbitrary driving video still needs its camera and first-frame 3D pose supplied separately.
 
+<details>
+<summary>Optional rest-pose descriptor checkpoint</summary>
+
+[Rest-pose checkpoint inference](docs/REST_POSE_INFERENCE.md)
+
+</details>
+
 The processed training dataset is not included. The checkpoint's `args.json` records its configuration.
 
 ## Citation

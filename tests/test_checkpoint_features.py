@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 import numpy as np
 
 from data_loaders.static_camera_dataset import _sample_dense_joint_features
-from sample.generate_checkpoint import build_item
+from sample.generate_checkpoint import build_item, load_averaged_rest_features
 
 
 class DenseJointSamplingTest(unittest.TestCase):
@@ -39,11 +39,30 @@ class DenseJointSamplingTest(unittest.TestCase):
             item = build_item(
                 np.zeros((1, 1369, 128), dtype=np.float16), parents,
                 first_pose, np.zeros((3, 2)), np.ones(3, bool), 512, stats,
-                "rest_merged", values, pca_path,
+                "rest_averaged", values, pca_path,
             )
         np.testing.assert_allclose(item[4], [[0, 0, 0], [0, 1, 0], [0, 1, 0]])
         self.assertEqual(item[8].shape, (3, 256))
         np.testing.assert_allclose(np.linalg.norm(item[8][:, :128], axis=1), 1)
+
+    def test_rest_features_use_averaged_dictionary_in_joint_order(self):
+        with TemporaryDirectory() as temporary:
+            averaged_path = Path(temporary) / "joint_averaged_features.npy"
+            np.save(averaged_path, {
+                "root": np.full(768, 1, dtype=np.float32),
+                "tail": np.full(768, 2, dtype=np.float32),
+            })
+            features = load_averaged_rest_features(
+                averaged_path, np.asarray(["tail_end_site", "root"])
+            )
+            np.testing.assert_allclose(features[:, 0], [2, 1])
+            with self.assertRaisesRegex(KeyError, "missing"):
+                load_averaged_rest_features(averaged_path, np.asarray(["missing"]))
+            with self.assertRaisesRegex(ValueError, "joint_averaged_features.npy"):
+                load_averaged_rest_features(
+                    Path(temporary) / "joint_max_weight_features.npy",
+                    np.asarray(["root"]),
+                )
 
 
 if __name__ == "__main__":
